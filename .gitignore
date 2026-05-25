@@ -1,0 +1,29 @@
+# Dependencies
+frontend/node_modules/
+api/.venv/
+
+# Build outputs
+frontend/.next/
+frontend/out/
+frontend/dist/
+
+# Runtime data
+api/data/
+*.log
+
+# Test and cache files
+.pytest_cache/
+api/.pytest_cache/
+__pycache__/
+*.py[cod]
+
+# Local environment
+.env
+.env.local
+.env.*.local
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
