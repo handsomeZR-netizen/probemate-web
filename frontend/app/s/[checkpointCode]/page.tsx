@@ -17,8 +17,8 @@ import {
   SelectTrigger
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { ApiError, getCheckpointByCode, submitResponse, updateResponse } from "@/lib/api";
-import type { Checkpoint, StudentConfidence } from "@/lib/types";
+import { ApiError, getCheckpointByCode, getDataGovernancePolicy, submitResponse, updateResponse } from "@/lib/api";
+import type { Checkpoint, DataGovernancePolicy, StudentConfidence } from "@/lib/types";
 
 const statusLabels: Record<Checkpoint["status"], string> = {
   open: "收集中",
@@ -35,6 +35,7 @@ export default function StudentSubmitPage() {
   const params = useParams<{ checkpointCode: string }>();
   const code = String(params.checkpointCode ?? "");
   const [checkpoint, setCheckpoint] = useState<Checkpoint | null>(null);
+  const [governance, setGovernance] = useState<DataGovernancePolicy | null>(null);
   const [submitted, setSubmitted] = useState(false);
   const [submitMessage, setSubmitMessage] = useState("已提交");
   const [error, setError] = useState<string | null>(null);
@@ -55,6 +56,9 @@ export default function StudentSubmitPage() {
     if (code) {
       void load();
     }
+    getDataGovernancePolicy()
+      .then(setGovernance)
+      .catch(() => setGovernance(null));
   }, [code]);
 
   useEffect(() => {
@@ -163,7 +167,10 @@ export default function StudentSubmitPage() {
             <form onSubmit={onSubmit} className="space-y-4">
               <Alert>
                 <ShieldCheckIcon className="size-4" weight="duotone" />
-                <AlertDescription>不会在学生端显示个人误概念标签。</AlertDescription>
+                <AlertDescription>
+                  {governance?.student_notice ??
+                    "短答用于帮助老师选择下一步追问；不会在学生端显示个人误概念标签。"}
+                </AlertDescription>
               </Alert>
               <div className="space-y-2">
                 <Label htmlFor="anonymous_student_id">匿名编号，可留空</Label>

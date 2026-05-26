@@ -112,3 +112,43 @@ def test_missing_quote_downgrades_to_ask() -> None:
     decision = decide_gate(input_pack, candidate_output)
     assert decision.move == GateMove.ASK_FOR_EVIDENCE
     assert decision.fallback_reason == "no_quote"
+    assert decision.downgrade_reason == "no_valid_quote"
+
+
+def test_answer_leakage_risk_downgrades_to_ask() -> None:
+    input_pack = InputPack(
+        episode_id="resp_leakage",
+        question="汽车向前运动，但速度越来越小，它的加速度方向是什么？",
+        student_answer="向后，因为速度变小。",
+        target_concept="加速度方向",
+        lesson_phase=LessonPhase.PRACTICE,
+        current_activity=CurrentActivity.WHOLE_CLASS,
+        visibility_policy=VisibilityPolicy.TEACHER_ONLY,
+    )
+    candidate_output = CandidateOutput.model_validate(
+        {
+            "candidate_explanations": [
+                {
+                    "label": "velocity_change_direction",
+                    "student_quotes": ["速度变小"],
+                    "interpretation": "学生提到速度变小，可以追问速度变化量方向。",
+                    "missing_evidence": "还没有画出速度变化量。",
+                    "risk_if_overdiagnosed": "不能直接公布答案。",
+                }
+            ],
+            "evidence_state": EvidenceState.SUFFICIENT,
+            "distinguishability": "short_probe_can_distinguish",
+            "suggested_teacher_moves": [
+                {
+                    "move_type_hint": GateMove.DIAGNOSTIC_PROBE,
+                    "text": "答案是向后，你能解释为什么吗？",
+                    "answer_leakage_risk": "high",
+                }
+            ],
+        }
+    )
+
+    decision = decide_gate(input_pack, candidate_output)
+
+    assert decision.move == GateMove.ASK_FOR_EVIDENCE
+    assert decision.downgrade_reason == "answer_leakage_risk"

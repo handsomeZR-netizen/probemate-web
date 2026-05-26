@@ -4,7 +4,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from threading import RLock
 from uuid import uuid4
+from typing import Any
 
+from app.repositories.base import StoreRepository
 from app.schemas.models import (
     CheckpointCreate,
     CheckpointRead,
@@ -12,6 +14,7 @@ from app.schemas.models import (
     CheckpointUpdate,
     CurrentActivity,
     EpisodeLog,
+    ExperimentCondition,
     GateMove,
     LessonPhase,
     QueueState,
@@ -60,6 +63,22 @@ def edit_distance(a: str, b: str) -> int:
     return dp[-1][-1]
 
 
+def parse_store_payload(raw: dict[str, Any]) -> tuple[
+    dict[str, CheckpointRead],
+    dict[str, StudentResponseRead],
+    dict[str, TeacherCard],
+    dict[str, TeacherActionRead],
+    dict[str, EpisodeLog],
+]:
+    return (
+        {item["id"]: CheckpointRead.model_validate(item) for item in raw.get("checkpoints", [])},
+        {item["id"]: StudentResponseRead.model_validate(item) for item in raw.get("responses", [])},
+        {item["id"]: TeacherCard.model_validate(item) for item in raw.get("cards", [])},
+        {item["id"]: TeacherActionRead.model_validate(item) for item in raw.get("teacher_actions", [])},
+        {item["id"]: EpisodeLog.model_validate(item) for item in raw.get("episode_logs", [])},
+    )
+
+
 class InMemoryStore:
     def __init__(self) -> None:
         default_path = Path(__file__).resolve().parents[2] / "data" / "dev-store.json"
@@ -78,45 +97,29 @@ class InMemoryStore:
             if not self.store_path.exists():
                 return
             raw = json.loads(self.store_path.read_text(encoding="utf-8"))
-            self.checkpoints = {
-                item["id"]: CheckpointRead.model_validate(item)
-                for item in raw.get("checkpoints", [])
-            }
-            self.responses = {
-                item["id"]: StudentResponseRead.model_validate(item)
-                for item in raw.get("responses", [])
-            }
-            self.cards = {
-                item["id"]: TeacherCard.model_validate(item)
-                for item in raw.get("cards", [])
-            }
-            self.teacher_actions = {
-                item["id"]: TeacherActionRead.model_validate(item)
-                for item in raw.get("teacher_actions", [])
-            }
-            self.episode_logs = {
-                item["id"]: EpisodeLog.model_validate(item)
-                for item in raw.get("episode_logs", [])
-            }
+            (
+                self.checkpoints,
+                self.responses,
+                self.cards,
+                self.teacher_actions,
+                self.episode_logs,
+            ) = parse_store_payload(raw)
             self.seeded = bool(self.checkpoints)
+
+    def dump_payload_unlocked(self) -> dict[str, Any]:
+        return {
+            "schema_version": 1,
+            "checkpoints": [item.model_dump(mode="json") for item in self.checkpoints.values()],
+            "responses": [item.model_dump(mode="json") for item in self.responses.values()],
+            "cards": [item.model_dump(mode="json") for item in self.cards.values()],
+            "teacher_actions": [item.model_dump(mode="json") for item in self.teacher_actions.values()],
+            "episode_logs": [item.model_dump(mode="json") for item in self.episode_logs.values()],
+        }
 
     def persist(self) -> None:
         with self._lock:
             self.store_path.parent.mkdir(parents=True, exist_ok=True)
-            payload = {
-                "schema_version": 1,
-                "checkpoints": [
-                    item.model_dump(mode="json") for item in self.checkpoints.values()
-                ],
-                "responses": [item.model_dump(mode="json") for item in self.responses.values()],
-                "cards": [item.model_dump(mode="json") for item in self.cards.values()],
-                "teacher_actions": [
-                    item.model_dump(mode="json") for item in self.teacher_actions.values()
-                ],
-                "episode_logs": [
-                    item.model_dump(mode="json") for item in self.episode_logs.values()
-                ],
-            }
+            payload = self.dump_payload_unlocked()
             tmp_path = self.store_path.with_suffix(".tmp")
             tmp_path.write_text(
                 json.dumps(payload, ensure_ascii=False, indent=2),
@@ -295,7 +298,7 @@ class InMemoryStore:
             log = EpisodeLog(
                 id=new_id("elog"),
                 source="live_checkpoint",
-                condition="ProbeMate",
+                condition=ExperimentCondition.PROBEMATE.value,
                 checkpoint_id=checkpoint.id,
                 response_id=response.id,
                 response_revision=response.revision,
@@ -305,6 +308,7 @@ class InMemoryStore:
                 lesson_phase=checkpoint.lesson_phase,
                 current_activity=checkpoint.current_activity,
                 visibility_policy=checkpoint.visibility_policy,
+                class_name=checkpoint.class_name,
                 response_source=response.response_source,
                 confidence_level=response.confidence_level,
                 card_id=card.id,
@@ -321,11 +325,26 @@ class InMemoryStore:
                 blocked_actions=card.gate_decision.blocked_actions,
                 shown_teacher_move=card.gate_decision.teacher_move,
                 analysis_cached=analysis_cached,
+                prompt_version=card.prompt_version,
+                ai_schema_version=card.ai_schema_version,
+                ai_provider=card.ai_provider,
+                model_name=card.model_name,
+                raw_llm_valid=card.raw_llm_valid,
+                validation_error=card.validation_error,
+                provider_error=card.provider_error,
+                downgrade_reason=card.downgrade_reason or card.gate_decision.downgrade_reason,
+                fallback_used=card.fallback_used,
                 queue_state=queue_state,
             )
             self.episode_logs[log.id] = log
             self.persist()
             return card
+
+    def save_episode_log(self, log: EpisodeLog) -> EpisodeLog:
+        with self._lock:
+            self.episode_logs[log.id] = log
+            self.persist()
+            return log
 
     def get_card(self, card_id: str) -> TeacherCard | None:
         with self._lock:
@@ -388,6 +407,7 @@ class InMemoryStore:
         teacher_action: str | None = None,
         response_source: str | None = None,
         queue_state: str | None = None,
+        condition: str | None = None,
         limit: int | None = None,
         offset: int = 0,
     ) -> list[EpisodeLog]:
@@ -403,6 +423,8 @@ class InMemoryStore:
                 logs = [log for log in logs if log.response_source == response_source]
             if queue_state is not None:
                 logs = [log for log in logs if log.queue_state == queue_state]
+            if condition is not None:
+                logs = [log for log in logs if log.condition == condition]
             if offset > 0:
                 logs = logs[offset:]
             if limit is not None:
@@ -410,4 +432,81 @@ class InMemoryStore:
             return logs
 
 
-store = InMemoryStore()
+class PostgresStore(InMemoryStore):
+    def __init__(self, database_url: str) -> None:
+        self.database_url = database_url
+        self._lock = RLock()
+        self.checkpoints: dict[str, CheckpointRead] = {}
+        self.responses: dict[str, StudentResponseRead] = {}
+        self.cards: dict[str, TeacherCard] = {}
+        self.teacher_actions: dict[str, TeacherActionRead] = {}
+        self.episode_logs: dict[str, EpisodeLog] = {}
+        self.seeded = False
+        self.load()
+
+    def _connect(self):
+        import psycopg
+
+        return psycopg.connect(self.database_url)
+
+    def load(self) -> None:
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    create table if not exists probemate_store (
+                        id text primary key,
+                        payload jsonb not null,
+                        updated_at timestamptz not null default now()
+                    )
+                    """
+                )
+                row = conn.execute("select payload from probemate_store where id = 'default'").fetchone()
+                if row is None:
+                    return
+                raw = row[0]
+                if isinstance(raw, str):
+                    raw = json.loads(raw)
+                (
+                    self.checkpoints,
+                    self.responses,
+                    self.cards,
+                    self.teacher_actions,
+                    self.episode_logs,
+                ) = parse_store_payload(raw)
+                self.seeded = bool(self.checkpoints)
+
+    def persist(self) -> None:
+        with self._lock:
+            payload = self.dump_payload_unlocked()
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    create table if not exists probemate_store (
+                        id text primary key,
+                        payload jsonb not null,
+                        updated_at timestamptz not null default now()
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    insert into probemate_store (id, payload, updated_at)
+                    values ('default', %s::jsonb, now())
+                    on conflict (id) do update set payload = excluded.payload, updated_at = now()
+                    """,
+                    (json.dumps(payload, ensure_ascii=False),),
+                )
+
+
+def create_store() -> StoreRepository:
+    backend = os.getenv("STORE_BACKEND", "json").strip().lower()
+    if backend == "postgres":
+        database_url = os.getenv("DATABASE_URL")
+        if not database_url:
+            raise RuntimeError("DATABASE_URL is required when STORE_BACKEND=postgres")
+        return PostgresStore(database_url)
+    return InMemoryStore()
+
+
+store: StoreRepository = create_store()

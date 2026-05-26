@@ -1,6 +1,8 @@
 from fastapi.testclient import TestClient
 
+from app.schemas.models import CandidateOutput
 from app.main import app
+from app.services.llm_client import LLMValidationError, OpenAIValidationError
 
 
 client = TestClient(app)
@@ -15,6 +17,7 @@ def test_episode_flow() -> None:
             "lesson_phase": "introduce",
             "current_activity": "whole_class",
             "visibility_policy": "teacher_only",
+            "class_name": "研究课 A",
         },
     )
     assert checkpoint_response.status_code == 200
@@ -55,6 +58,7 @@ def test_episode_flow() -> None:
     assert matching_log["card_id"] == card["id"]
     assert matching_log["ai_run_id"] == analysis["ai_run_id"]
     assert matching_log["target_concept"] == "加速度方向"
+    assert matching_log["class_name"] == "研究课 A"
     assert matching_log["response_source"] == "student_qr"
     assert matching_log["confidence_level"] == "low"
     assert matching_log["evidence_state"] == "ambiguous"
@@ -120,6 +124,89 @@ def test_research_data_dictionary_documents_key_fields() -> None:
     assert "confidence_level" in fields
     assert fields["confidence_level"]["allowed_values"] == ["unsure", "low", "medium", "high"]
     assert "queue_state" in fields
+    assert "class_name" in fields
+
+
+def test_data_governance_policy_defaults() -> None:
+    response = client.get("/data-governance")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["retention_days"] == 180
+    assert payload["deidentify_exports_by_default"] is True
+    assert payload["student_misconception_labels_hidden"] is True
+
+
+def test_teacher_access_code_protects_teacher_routes(monkeypatch) -> None:
+    monkeypatch.setenv("TEACHER_ACCESS_CODE", "teacher-code")
+    monkeypatch.setenv("RESEARCH_ACCESS_CODE", "research-code")
+    monkeypatch.setenv("AUTH_SECRET", "test-secret")
+
+    unauthorized = client.get("/checkpoints")
+    assert unauthorized.status_code == 401
+
+    login_response = client.post(
+        "/auth/login",
+        json={"role": "teacher", "access_code": "teacher-code"},
+    )
+    assert login_response.status_code == 200
+    token = login_response.json()["access_token"]
+
+    authorized = client.get("/checkpoints", headers={"Authorization": f"Bearer {token}"})
+    assert authorized.status_code == 200
+
+    checkpoint_response = client.post(
+        "/checkpoints",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "question": "减速运动中，加速度方向如何判断？",
+            "target_concept": "加速度方向",
+            "lesson_phase": "introduce",
+            "current_activity": "whole_class",
+            "visibility_policy": "teacher_only",
+        },
+    )
+    checkpoint = checkpoint_response.json()
+    blocked_teacher_rep = client.post(
+        f"/checkpoints/{checkpoint['id']}/responses",
+        json={
+            "answer_text": "教师录入代表回答。",
+            "anonymous_student_id": "T-rep",
+            "response_source": "teacher_representative",
+        },
+    )
+    assert blocked_teacher_rep.status_code == 401
+    allowed_teacher_rep = client.post(
+        f"/checkpoints/{checkpoint['id']}/responses",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "answer_text": "教师录入代表回答。",
+            "anonymous_student_id": "T-rep",
+            "response_source": "teacher_representative",
+        },
+    )
+    assert allowed_teacher_rep.status_code == 200
+
+    research_forbidden = client.get("/research/episode-logs", headers={"Authorization": f"Bearer {token}"})
+    assert research_forbidden.status_code == 403
+
+    research_login = client.post(
+        "/auth/login",
+        json={"role": "researcher", "access_code": "research-code"},
+    )
+    research_token = research_login.json()["access_token"]
+    research_allowed = client.get(
+        "/research/episode-logs",
+        headers={"Authorization": f"Bearer {research_token}"},
+    )
+    assert research_allowed.status_code == 200
+
+    condition_allowed = client.post(
+        "/experimental/generate-condition",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"response_id": allowed_teacher_rep.json()["id"], "condition": "evidence_only"},
+    )
+    assert condition_allowed.status_code == 200
 
 
 def test_patch_response_representative_selection() -> None:
@@ -309,6 +396,8 @@ def test_research_logs_csv_export() -> None:
     assert response.headers["content-type"].startswith("text/csv")
     assert "response_source,confidence_level,card_id,ai_run_id,latency_ms,system_move" in response.text
     assert "ckpt_" not in response.text
+    assert "向前，因为车还在往前走。" not in response.text
+    assert "[deidentified_text:" in response.text
 
 
 def test_research_logs_csv_can_export_raw_ids_for_local_debugging() -> None:
@@ -316,3 +405,257 @@ def test_research_logs_csv_can_export_raw_ids_for_local_debugging() -> None:
 
     assert response.status_code == 200
     assert "ckpt_" in response.text
+
+
+def test_condition_generator_outputs_all_conditions() -> None:
+    checkpoint_response = client.post(
+        "/checkpoints",
+        json={
+            "question": "汽车向前运动，但速度越来越小，它的加速度方向是什么？",
+            "target_concept": "加速度方向",
+            "lesson_phase": "introduce",
+            "current_activity": "whole_class",
+            "visibility_policy": "teacher_only",
+        },
+    )
+    checkpoint = checkpoint_response.json()
+    student_response = client.post(
+        f"/checkpoints/{checkpoint['id']}/responses",
+        json={"answer_text": "向前，因为车还在往前走。", "anonymous_student_id": "S31"},
+    )
+    response = student_response.json()
+
+    results = {}
+    for condition in ["no_ai", "standard_llm", "over_committed", "evidence_only", "probemate"]:
+        condition_response = client.post(
+            "/experimental/generate-condition",
+            json={"response_id": response["id"], "condition": condition},
+        )
+        assert condition_response.status_code == 200
+        payload = condition_response.json()
+        assert payload["condition"] == condition
+        assert payload["teacher_card"]
+        results[condition] = payload
+
+    assert results["no_ai"]["move"] is None
+    assert results["over_committed"]["move"] == "diagnostic_probe"
+    assert "混淆" in results["over_committed"]["teacher_card"]
+    assert results["probemate"]["move"] in {"hold", "ask_for_evidence", "diagnostic_probe"}
+
+    logs_response = client.get("/research/episode-logs?condition=over_committed")
+    logs = logs_response.json()
+    assert logs_response.status_code == 200
+    matching = next(log for log in logs if log["response_id"] == response["id"])
+    assert matching["condition"] == "over_committed"
+    assert matching["ai_provider"] == "baseline"
+
+
+def test_phase_manipulation_shows_ask_probe_hold_sequence() -> None:
+    intro = client.post(
+        "/demo/phase-manipulation",
+        json={"lesson_phase": "introduce", "current_activity": "whole_class"},
+    ).json()
+    practiced = client.post(
+        "/demo/phase-manipulation",
+        json={"lesson_phase": "practice", "current_activity": "whole_class"},
+    ).json()
+    discussion = client.post(
+        "/demo/phase-manipulation",
+        json={"lesson_phase": "practice", "current_activity": "peer_discussion"},
+    ).json()
+
+    assert intro["move"] == "ask_for_evidence"
+    assert practiced["move"] == "diagnostic_probe"
+    assert discussion["move"] == "hold"
+
+
+def test_ai_provider_status_reports_mock_by_default(monkeypatch) -> None:
+    monkeypatch.delenv("AI_PROVIDER", raising=False)
+    monkeypatch.delenv("AI_MODEL", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    response = client.get("/ai/provider-status")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "ai_provider": "mock",
+        "model_name": None,
+        "configured": True,
+        "fallback_available": True,
+    }
+
+
+def test_openai_provider_success_records_ai_metadata(monkeypatch) -> None:
+    monkeypatch.setenv("AI_PROVIDER", "openai")
+    monkeypatch.setenv("AI_MODEL", "test-model")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+    def fake_generate_candidate_output(self, input_pack):
+        return CandidateOutput.model_validate(
+            {
+                "candidate_explanations": [
+                    {
+                        "label": "velocity_change_direction",
+                        "student_quotes": ["速度变小"],
+                        "interpretation": "学生已经提到速度变小，可以追问速度变化量方向。",
+                        "missing_evidence": "需要说明速度箭头如何变化。",
+                        "risk_if_overdiagnosed": "仍需避免直接给出标准答案。",
+                    }
+                ],
+                "evidence_state": "sufficient",
+                "distinguishability": "short_probe_can_distinguish",
+                "suggested_teacher_moves": [
+                    {
+                        "move_type_hint": "diagnostic_probe",
+                        "text": "如果速度箭头变短，速度变化量指向哪里？",
+                        "answer_leakage_risk": "low",
+                    }
+                ],
+                "safety_notes": ["不要直接公布正确方向。"],
+            }
+        )
+
+    monkeypatch.setattr(
+        "app.services.llm_client.OpenAIResponsesClient.generate_candidate_output",
+        fake_generate_candidate_output,
+    )
+    checkpoint_response = client.post(
+        "/checkpoints",
+        json={
+            "question": "汽车向前运动，但速度越来越小，它的加速度方向是什么？",
+            "target_concept": "加速度方向",
+            "lesson_phase": "practice",
+            "current_activity": "whole_class",
+            "visibility_policy": "teacher_only",
+        },
+    )
+    checkpoint = checkpoint_response.json()
+    student_response = client.post(
+        f"/checkpoints/{checkpoint['id']}/responses",
+        json={"answer_text": "向后，因为速度变小。", "anonymous_student_id": "S21"},
+    )
+    response = student_response.json()
+
+    analysis_response = client.post(f"/responses/{response['id']}/analyze")
+
+    assert analysis_response.status_code == 200
+    analysis = analysis_response.json()
+    assert analysis["ai_provider"] == "openai"
+    assert analysis["model_name"] == "test-model"
+    assert analysis["raw_llm_valid"] is True
+    assert analysis["fallback_used"] is False
+    assert analysis["card"]["gate_decision"]["move"] == "diagnostic_probe"
+    assert analysis["card"]["ai_provider"] == "openai"
+
+    logs = client.get(f"/research/episode-logs?checkpoint_id={checkpoint['id']}").json()
+    matching = next(log for log in logs if log["response_id"] == response["id"])
+    assert matching["ai_provider"] == "openai"
+    assert matching["model_name"] == "test-model"
+    assert matching["raw_llm_valid"] is True
+    assert matching["fallback_used"] is False
+
+
+def test_openai_schema_failure_downgrades_to_conservative_ask(monkeypatch) -> None:
+    monkeypatch.setenv("AI_PROVIDER", "openai")
+    monkeypatch.setenv("AI_MODEL", "test-model")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+    def fake_generate_candidate_output(self, input_pack):
+        raise OpenAIValidationError("bad schema")
+
+    monkeypatch.setattr(
+        "app.services.llm_client.OpenAIResponsesClient.generate_candidate_output",
+        fake_generate_candidate_output,
+    )
+    checkpoint_response = client.post(
+        "/checkpoints",
+        json={
+            "question": "汽车向前运动，但速度越来越小，它的加速度方向是什么？",
+            "target_concept": "加速度方向",
+            "lesson_phase": "introduce",
+            "current_activity": "whole_class",
+            "visibility_policy": "teacher_only",
+        },
+    )
+    checkpoint = checkpoint_response.json()
+    student_response = client.post(
+        f"/checkpoints/{checkpoint['id']}/responses",
+        json={"answer_text": "向前，因为车还在往前走。", "anonymous_student_id": "S22"},
+    )
+    response = student_response.json()
+
+    analysis_response = client.post(f"/responses/{response['id']}/analyze")
+
+    assert analysis_response.status_code == 200
+    analysis = analysis_response.json()
+    card = analysis["card"]
+    assert analysis["fallback_used"] is True
+    assert analysis["raw_llm_valid"] is False
+    assert card["gate_decision"]["move"] == "ask_for_evidence"
+    assert card["downgrade_reason"] == "schema_validation_failed"
+    assert card["validation_error"] == "bad schema"
+
+    logs = client.get(f"/research/episode-logs?checkpoint_id={checkpoint['id']}").json()
+    matching = next(log for log in logs if log["response_id"] == response["id"])
+    assert matching["downgrade_reason"] == "schema_validation_failed"
+    assert matching["validation_error"] == "bad schema"
+    assert matching["fallback_used"] is True
+
+
+def test_deepseek_provider_status_uses_v4_flash_default(monkeypatch) -> None:
+    monkeypatch.setenv("AI_PROVIDER", "deepseek")
+    monkeypatch.delenv("AI_MODEL", raising=False)
+    monkeypatch.delenv("DEEPSEEK_MODEL", raising=False)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+
+    response = client.get("/ai/provider-status")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "ai_provider": "deepseek",
+        "model_name": "deepseek-v4-flash",
+        "configured": True,
+        "fallback_available": True,
+    }
+
+
+def test_deepseek_schema_failure_downgrades_to_conservative_ask(monkeypatch) -> None:
+    monkeypatch.setenv("AI_PROVIDER", "deepseek")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+    monkeypatch.delenv("AI_MODEL", raising=False)
+    monkeypatch.delenv("DEEPSEEK_MODEL", raising=False)
+
+    def fake_generate_candidate_output(self, input_pack):
+        raise LLMValidationError("bad json")
+
+    monkeypatch.setattr(
+        "app.services.llm_client.JSONChatCompletionsClient.generate_candidate_output",
+        fake_generate_candidate_output,
+    )
+    checkpoint_response = client.post(
+        "/checkpoints",
+        json={
+            "question": "汽车向前运动，但速度越来越小，它的加速度方向是什么？",
+            "target_concept": "加速度方向",
+            "lesson_phase": "introduce",
+            "current_activity": "whole_class",
+            "visibility_policy": "teacher_only",
+        },
+    )
+    checkpoint = checkpoint_response.json()
+    student_response = client.post(
+        f"/checkpoints/{checkpoint['id']}/responses",
+        json={"answer_text": "向前，因为车还在往前走。", "anonymous_student_id": "S23"},
+    )
+    response = student_response.json()
+
+    analysis_response = client.post(f"/responses/{response['id']}/analyze")
+
+    assert analysis_response.status_code == 200
+    analysis = analysis_response.json()
+    assert analysis["ai_provider"] == "deepseek"
+    assert analysis["model_name"] == "deepseek-v4-flash"
+    assert analysis["fallback_used"] is True
+    assert analysis["raw_llm_valid"] is False
+    assert analysis["card"]["downgrade_reason"] == "schema_validation_failed"
+    assert analysis["card"]["validation_error"] == "bad json"

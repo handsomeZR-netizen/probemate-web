@@ -33,6 +33,7 @@ import { cn } from "@/lib/utils";
 import type {
   DataDictionaryField,
   EpisodeLog,
+  ExperimentCondition,
   GateMove,
   QueueState,
   ResponseSource,
@@ -71,6 +72,13 @@ const confidenceLabels: Record<StudentConfidence, string> = {
   medium: "有些把握",
   high: "很有把握"
 };
+const conditionLabels: Record<ExperimentCondition, string> = {
+  no_ai: "No AI",
+  standard_llm: "Standard LLM",
+  over_committed: "Over-committed",
+  evidence_only: "Evidence-only",
+  probemate: "ProbeMate"
+};
 
 export default function ResearchPage() {
   const [logs, setLogs] = useState<EpisodeLog[]>([]);
@@ -79,6 +87,7 @@ export default function ResearchPage() {
   const [responseSource, setResponseSource] = useState<ResponseSource | "all">("all");
   const [teacherAction, setTeacherAction] = useState<TeacherAction | "all">("all");
   const [queueState, setQueueState] = useState<QueueState | "all">("all");
+  const [condition, setCondition] = useState<ExperimentCondition | "all">("all");
   const [pageIndex, setPageIndex] = useState(0);
   const [pageSize, setPageSize] = useState(50);
   const [loading, setLoading] = useState(true);
@@ -90,10 +99,11 @@ export default function ResearchPage() {
       response_source: responseSource,
       teacher_action: teacherAction,
       queue_state: queueState,
+      condition,
       limit: pageSize,
       offset: pageIndex * pageSize
     }),
-    [pageIndex, pageSize, queueState, responseSource, systemMove, teacherAction]
+    [condition, pageIndex, pageSize, queueState, responseSource, systemMove, teacherAction]
   );
 
   const load = useCallback(async () => {
@@ -120,7 +130,7 @@ export default function ResearchPage() {
 
   useEffect(() => {
     setPageIndex(0);
-  }, [queueState, responseSource, systemMove, teacherAction]);
+  }, [condition, queueState, responseSource, systemMove, teacherAction]);
 
   const moveCounts = logs.reduce<Record<GateMove, number>>(
     (acc, log) => {
@@ -131,6 +141,8 @@ export default function ResearchPage() {
     },
     { hold: 0, ask_for_evidence: 0, diagnostic_probe: 0 }
   );
+  const fallbackCount = logs.filter((log) => log.fallback_used).length;
+  const invalidOutputCount = logs.filter((log) => !log.raw_llm_valid).length;
 
   function downloadCsv() {
     window.location.href = episodeLogsCsvUrl({ ...filters, deidentify: true });
@@ -141,6 +153,7 @@ export default function ResearchPage() {
     setResponseSource("all");
     setTeacherAction("all");
     setQueueState("all");
+    setCondition("all");
     setPageIndex(0);
   }
 
@@ -165,16 +178,18 @@ export default function ResearchPage() {
         <p className="mt-1 text-sm text-muted-foreground">用于核对 Study 2/3/4 所需 episode 字段。</p>
       </header>
 
-      <section className="mb-5 grid gap-3 md:grid-cols-4">
+      <section className="mb-5 grid gap-3 md:grid-cols-6">
         <Metric label="总 episode" value={logs.length} />
         <Metric label="Hold" value={moveCounts.hold} />
         <Metric label="Ask" value={moveCounts.ask_for_evidence} />
         <Metric label="Probe" value={moveCounts.diagnostic_probe} />
+        <Metric label="Fallback" value={fallbackCount} />
+        <Metric label="Invalid LLM" value={invalidOutputCount} />
       </section>
 
       <Card className="mb-4">
         <CardContent>
-          <div className="grid gap-3 md:grid-cols-4">
+          <div className="grid gap-3 md:grid-cols-5">
             <FilterSelect
               label="Move"
               value={systemMove}
@@ -219,6 +234,19 @@ export default function ResearchPage() {
                 ["resolved", "已处理"],
                 ["dismissed", "已忽略"],
                 ["none", "无队列"]
+              ]}
+            />
+            <FilterSelect
+              label="Condition"
+              value={condition}
+              onValueChange={(value) => setCondition(value as ExperimentCondition | "all")}
+              options={[
+                ["all", "全部条件"],
+                ["probemate", "ProbeMate"],
+                ["standard_llm", "Standard LLM"],
+                ["over_committed", "Over-committed"],
+                ["evidence_only", "Evidence-only"],
+                ["no_ai", "No AI"]
               ]}
             />
           </div>
@@ -284,13 +312,16 @@ export default function ResearchPage() {
           <CardDescription>回答来源、证据状态、教师动作和 gate 审计字段。</CardDescription>
         </CardHeader>
         <CardContent>
-          <Table className="min-w-[1240px]">
+          <Table className="min-w-[1560px]">
             <TableHeader>
               <TableRow>
                 <TableHead>Condition</TableHead>
+                <TableHead>AI</TableHead>
                 <TableHead>Source</TableHead>
                 <TableHead>Move</TableHead>
                 <TableHead>Evidence</TableHead>
+                <TableHead>Validation</TableHead>
+                <TableHead>Downgrade</TableHead>
                 <TableHead>Confidence</TableHead>
                 <TableHead>Teacher Action</TableHead>
                 <TableHead>Decision Time</TableHead>
@@ -302,7 +333,15 @@ export default function ResearchPage() {
             <TableBody>
               {logs.map((log) => (
                 <TableRow key={log.id}>
-                  <TableCell>{log.condition}</TableCell>
+                  <TableCell>{conditionLabels[log.condition as ExperimentCondition] ?? log.condition}</TableCell>
+                  <TableCell>
+                    <div className="space-y-1">
+                      <Badge variant="outline">{log.ai_provider}</Badge>
+                      {log.model_name ? (
+                        <p className="text-xs text-muted-foreground">{log.model_name}</p>
+                      ) : null}
+                    </div>
+                  </TableCell>
                   <TableCell>
                     {log.response_source ? responseSourceLabels[log.response_source] : "-"}
                   </TableCell>
@@ -310,6 +349,24 @@ export default function ResearchPage() {
                     {log.system_move ? <Badge variant="secondary">{moveLabels[log.system_move]}</Badge> : "-"}
                   </TableCell>
                   <TableCell>{log.evidence_state ?? "-"}</TableCell>
+                  <TableCell>
+                    <div className="space-y-1">
+                      <Badge variant={log.raw_llm_valid ? "secondary" : "outline"}>
+                        {log.raw_llm_valid ? "valid" : "invalid"}
+                      </Badge>
+                      {log.fallback_used ? (
+                        <p className="text-xs text-muted-foreground">fallback</p>
+                      ) : null}
+                    </div>
+                  </TableCell>
+                  <TableCell className="max-w-xs whitespace-normal leading-6">
+                    {log.downgrade_reason ?? "-"}
+                    {log.validation_error || log.provider_error ? (
+                      <span className="mt-1 block text-xs text-muted-foreground">
+                        {log.validation_error ?? log.provider_error}
+                      </span>
+                    ) : null}
+                  </TableCell>
                   <TableCell>{log.confidence_level ? confidenceLabels[log.confidence_level] : "-"}</TableCell>
                   <TableCell>{log.teacher_action ? teacherActionLabels[log.teacher_action] : "-"}</TableCell>
                   <TableCell>
@@ -334,7 +391,7 @@ export default function ResearchPage() {
               ))}
               {logs.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={10} className="h-28 text-center text-muted-foreground">
+                  <TableCell colSpan={13} className="h-28 text-center text-muted-foreground">
                     暂无 episode log。运行一次代表回答分析后，这里会出现研究记录。
                   </TableCell>
                 </TableRow>

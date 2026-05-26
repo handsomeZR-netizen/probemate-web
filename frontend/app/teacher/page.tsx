@@ -67,6 +67,7 @@ export default function TeacherPage() {
   const [selectedTemplateId, setSelectedTemplateId] = useState("custom");
   const [question, setQuestion] = useState("汽车向前运动，但速度越来越小，它的加速度方向是什么？");
   const [targetConcept, setTargetConcept] = useState("加速度方向");
+  const [className, setClassName] = useState("研究课 A");
   const [lessonPhase, setLessonPhase] = useState<LessonPhase>("introduce");
   const [currentActivity, setCurrentActivity] = useState<CurrentActivity>("whole_class");
   const [visibilityPolicy, setVisibilityPolicy] = useState<Checkpoint["visibility_policy"]>("teacher_only");
@@ -115,6 +116,7 @@ export default function TeacherPage() {
       await createCheckpoint({
         question,
         target_concept: targetConcept,
+        class_name: className,
         lesson_phase: lessonPhase,
         current_activity: currentActivity,
         visibility_policy: visibilityPolicy
@@ -123,6 +125,7 @@ export default function TeacherPage() {
       setSelectedTemplateId("custom");
       setQuestion("汽车向前运动，但速度越来越小，它的加速度方向是什么？");
       setTargetConcept("加速度方向");
+      setClassName("研究课 A");
       setLessonPhase("introduce");
       setCurrentActivity("whole_class");
       setVisibilityPolicy("teacher_only");
@@ -204,6 +207,15 @@ export default function TeacherPage() {
                     setTargetConcept(event.target.value);
                     setSelectedTemplateId("custom");
                   }}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="class_name">班级 / 场次</Label>
+                <Input
+                  id="class_name"
+                  name="class_name"
+                  value={className}
+                  onChange={(event) => setClassName(event.target.value)}
                 />
               </div>
               <div className="grid gap-3 sm:grid-cols-2">
@@ -300,6 +312,7 @@ export default function TeacherPage() {
                       <p className="text-xs text-muted-foreground">
                         {phaseLabels[checkpoint.lesson_phase]} / {activityLabels[checkpoint.current_activity]} /{" "}
                         {visibilityLabels[checkpoint.visibility_policy]}
+                        {checkpoint.class_name ? ` / ${checkpoint.class_name}` : ""}
                       </p>
                     </CardContent>
                   </Card>

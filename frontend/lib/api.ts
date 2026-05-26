@@ -1,13 +1,19 @@
 import type {
+  AIProviderStatus,
   AnalyzeResponseResult,
+  AuthSession,
   Checkpoint,
   CheckpointTemplate,
   CheckpointStatus,
   CurrentActivity,
   DataDictionaryField,
+  DataGovernancePolicy,
   EpisodeLog,
+  ExperimentCondition,
+  ExperimentalConditionResult,
   GateMove,
   LessonPhase,
+  PhaseManipulationResult,
   QueueState,
   ResponseSource,
   StudentConfidence,
@@ -16,6 +22,7 @@ import type {
 } from "./types";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000";
+const AUTH_STORAGE_KEY = "probemate-auth-token";
 
 export class ApiError extends Error {
   status: number;
@@ -30,10 +37,12 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const token = typeof window === "undefined" ? null : window.localStorage.getItem(AUTH_STORAGE_KEY);
   const response = await fetch(`${API_BASE_URL}${path}`, {
     ...init,
     headers: {
       "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(init?.headers ?? {})
     },
     cache: "no-store"
@@ -56,6 +65,35 @@ export function listCheckpoints(): Promise<Checkpoint[]> {
   return request<Checkpoint[]>("/checkpoints");
 }
 
+export function saveAuthSession(session: AuthSession): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.localStorage.setItem(AUTH_STORAGE_KEY, session.access_token);
+}
+
+export function clearAuthSession(): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.localStorage.removeItem(AUTH_STORAGE_KEY);
+}
+
+export function login(payload: { role: "teacher" | "researcher"; access_code: string }): Promise<AuthSession> {
+  return request<AuthSession>("/auth/login", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
+export function getAIProviderStatus(): Promise<AIProviderStatus> {
+  return request<AIProviderStatus>("/ai/provider-status");
+}
+
+export function getDataGovernancePolicy(): Promise<DataGovernancePolicy> {
+  return request<DataGovernancePolicy>("/data-governance");
+}
+
 export function listCheckpointTemplates(): Promise<CheckpointTemplate[]> {
   return request<CheckpointTemplate[]>("/checkpoint-templates");
 }
@@ -66,6 +104,7 @@ export function createCheckpoint(payload: {
   lesson_phase: LessonPhase;
   current_activity: CurrentActivity;
   visibility_policy: "teacher_only" | "anonymous_representative" | "allow_public_display";
+  class_name?: string;
 }): Promise<Checkpoint> {
   return request<Checkpoint>("/checkpoints", {
     method: "POST",
@@ -165,6 +204,7 @@ export interface EpisodeLogFilters {
   teacher_action?: TeacherAction | "all";
   response_source?: ResponseSource | "all";
   queue_state?: QueueState | "all";
+  condition?: ExperimentCondition | "all";
   limit?: number;
   offset?: number;
 }
@@ -191,4 +231,27 @@ export function episodeLogsCsvUrl(filters?: EpisodeLogFilters & { deidentify?: b
 
 export function listDataDictionary(): Promise<DataDictionaryField[]> {
   return request<DataDictionaryField[]>("/research/data-dictionary");
+}
+
+export function generateExperimentalCondition(payload: {
+  response_id: string;
+  condition: ExperimentCondition;
+}): Promise<ExperimentalConditionResult> {
+  return request<ExperimentalConditionResult>("/experimental/generate-condition", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
+export function runPhaseManipulation(payload: {
+  lesson_phase: LessonPhase;
+  current_activity: CurrentActivity;
+  answer_text?: string;
+  question?: string;
+  target_concept?: string;
+}): Promise<PhaseManipulationResult> {
+  return request<PhaseManipulationResult>("/demo/phase-manipulation", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
 }

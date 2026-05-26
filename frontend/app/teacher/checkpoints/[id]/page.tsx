@@ -30,6 +30,8 @@ import {
   ApiError,
   analyzeResponse,
   createTeacherAction,
+  generateExperimentalCondition,
+  getAIProviderStatus,
   getCheckpoint,
   listEpisodeLogs,
   listResponses,
@@ -40,9 +42,12 @@ import {
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import type {
+  AIProviderStatus,
   AnalyzeResponseResult,
   Checkpoint,
   EpisodeLog,
+  ExperimentCondition,
+  ExperimentalConditionResult,
   ResponseSource,
   StudentResponse,
   TeacherAction,
@@ -100,11 +105,26 @@ const actionLabels: Record<TeacherAction, { label: string; icon: ReactNode }> = 
   },
   skip: { label: "跳过", icon: <ProhibitIcon data-icon="inline-start" className="size-4" weight="duotone" /> }
 };
+const conditionLabels: Record<ExperimentCondition, string> = {
+  no_ai: "No AI",
+  standard_llm: "Standard LLM",
+  over_committed: "Over-committed",
+  evidence_only: "Evidence-only",
+  probemate: "ProbeMate"
+};
+const experimentalConditions: ExperimentCondition[] = [
+  "no_ai",
+  "standard_llm",
+  "over_committed",
+  "evidence_only",
+  "probemate"
+];
 
 export default function TeacherCheckpointPage() {
   const params = useParams<{ id: string }>();
   const checkpointId = String(params.id ?? "");
   const [checkpoint, setCheckpoint] = useState<Checkpoint | null>(null);
+  const [providerStatus, setProviderStatus] = useState<AIProviderStatus | null>(null);
   const [responses, setResponses] = useState<StudentResponse[]>([]);
   const [queueLogs, setQueueLogs] = useState<EpisodeLog[]>([]);
   const [analysis, setAnalysis] = useState<AnalyzeResponseResult | null>(null);
@@ -116,6 +136,8 @@ export default function TeacherCheckpointPage() {
   const [savingAction, setSavingAction] = useState<TeacherAction | null>(null);
   const [togglingStatus, setTogglingStatus] = useState(false);
   const [markingResponseId, setMarkingResponseId] = useState<string | null>(null);
+  const [conditionResults, setConditionResults] = useState<ExperimentalConditionResult[]>([]);
+  const [generatingCondition, setGeneratingCondition] = useState<ExperimentCondition | null>(null);
 
   const representativeResponse = useMemo(
     () => responses.find((response) => response.is_representative) ?? null,
@@ -133,14 +155,16 @@ export default function TeacherCheckpointPage() {
       setLoading(true);
     }
     try {
-      const [nextCheckpoint, nextResponses, nextQueueLogs] = await Promise.all([
+      const [nextCheckpoint, nextResponses, nextQueueLogs, nextProviderStatus] = await Promise.all([
         getCheckpoint(checkpointId),
         listResponses(checkpointId),
-        listEpisodeLogs({ checkpoint_id: checkpointId, queue_state: "queued", limit: 20 })
+        listEpisodeLogs({ checkpoint_id: checkpointId, queue_state: "queued", limit: 20 }),
+        getAIProviderStatus()
       ]);
       setCheckpoint(nextCheckpoint);
       setResponses(nextResponses);
       setQueueLogs(nextQueueLogs);
+      setProviderStatus(nextProviderStatus);
     } catch (err) {
       setMessage(err instanceof Error ? err.message : "加载失败");
     } finally {
@@ -220,6 +244,28 @@ export default function TeacherCheckpointPage() {
       setMessage(err instanceof Error ? err.message : "分析失败，请重试。");
     } finally {
       setAnalyzing(false);
+    }
+  }
+
+  async function generateCondition(condition: ExperimentCondition) {
+    if (!selectedResponse) {
+      setMessage("请先选择一条回答。");
+      return;
+    }
+    setGeneratingCondition(condition);
+    setMessage(null);
+    try {
+      const result = await generateExperimentalCondition({
+        response_id: selectedResponse.id,
+        condition
+      });
+      setConditionResults((items) => [result, ...items.filter((item) => item.condition !== condition)]);
+      await load(true);
+      setMessage(`已生成 ${conditionLabels[condition]} 条件材料`);
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "生成实验条件失败。");
+    } finally {
+      setGeneratingCondition(null);
     }
   }
 
@@ -334,6 +380,13 @@ export default function TeacherCheckpointPage() {
               <div className="flex flex-wrap items-start justify-between gap-4">
                 <div>
                   <Badge variant="outline">{checkpoint.target_concept}</Badge>
+                  {providerStatus ? (
+                    <Badge variant={providerStatus.configured ? "secondary" : "outline"} className="ml-2">
+                      AI {providerStatus.ai_provider}
+                      {providerStatus.model_name ? ` / ${providerStatus.model_name}` : ""}
+                      {providerStatus.configured ? "" : " / 未配置"}
+                    </Badge>
+                  ) : null}
                   <CardTitle className="mt-3 max-w-3xl text-2xl leading-9">{checkpoint.question}</CardTitle>
                   <CardDescription className="mt-2">
                     {phaseLabels[checkpoint.lesson_phase]} / {activityLabels[checkpoint.current_activity]}
@@ -489,6 +542,13 @@ export default function TeacherCheckpointPage() {
                     当前选中的是普通回答。先设为代表，系统才会进入诊断闸门并写入选择记录。
                   </p>
                 ) : null}
+                {selectedResponse ? (
+                  <ExperimentalConditionPanel
+                    results={conditionResults}
+                    generatingCondition={generatingCondition}
+                    onGenerate={generateCondition}
+                  />
+                ) : null}
               </CardContent>
             </Card>
 
@@ -509,6 +569,51 @@ export default function TeacherCheckpointPage() {
         </>
       ) : null}
     </main>
+  );
+}
+
+function ExperimentalConditionPanel({
+  results,
+  generatingCondition,
+  onGenerate
+}: {
+  results: ExperimentalConditionResult[];
+  generatingCondition: ExperimentCondition | null;
+  onGenerate: (condition: ExperimentCondition) => Promise<void>;
+}) {
+  return (
+    <div className="mt-5 space-y-3 border-t pt-4">
+      <div className="flex flex-wrap gap-2">
+        {experimentalConditions.map((condition) => (
+          <Button
+            key={condition}
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={generatingCondition !== null}
+            onClick={() => void onGenerate(condition)}
+          >
+            {generatingCondition === condition ? "生成中..." : conditionLabels[condition]}
+          </Button>
+        ))}
+      </div>
+      {results.length > 0 ? (
+        <div className="grid gap-2">
+          {results.map((result) => (
+            <Card key={result.condition} size="sm" className="bg-muted/30">
+              <CardContent className="space-y-1 text-sm leading-6">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge variant="secondary">{conditionLabels[result.condition]}</Badge>
+                  {result.move ? <Badge variant="outline">{moveLabels[result.move]}</Badge> : null}
+                  <span className="text-xs text-muted-foreground">{result.ai_provider}</span>
+                </div>
+                <p className="text-muted-foreground">{result.teacher_card}</p>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -599,6 +704,23 @@ function TeacherCardPanel({
         <p className="text-xs font-semibold uppercase tracking-normal text-muted-foreground">Why this move</p>
         <p className="text-sm leading-6 text-muted-foreground">{decision.why_this_move}</p>
       </div>
+      <div className="grid gap-2 rounded-md border border-border bg-background p-3 text-xs text-muted-foreground sm:grid-cols-2">
+        <MetaItem label="Provider" value={`${card.ai_provider}${card.model_name ? ` / ${card.model_name}` : ""}`} />
+        <MetaItem label="Latency" value={`${analysis.latency_ms}ms${analysis.cached ? " / cached" : ""}`} />
+        <MetaItem label="Validation" value={card.raw_llm_valid ? "valid" : "invalid"} />
+        <MetaItem label="Fallback" value={card.fallback_used ? "used" : "not used"} />
+        {card.downgrade_reason ?? decision.downgrade_reason ? (
+          <MetaItem label="Downgrade" value={card.downgrade_reason ?? decision.downgrade_reason ?? "-"} />
+        ) : null}
+        <MetaItem label="Prompt" value={card.prompt_version} />
+      </div>
+      {card.validation_error || card.provider_error ? (
+        <Alert>
+          <AlertDescription>
+            {card.validation_error ? `Validation: ${card.validation_error}` : `Provider: ${card.provider_error}`}
+          </AlertDescription>
+        </Alert>
+      ) : null}
       <div className="space-y-2">
         <Label htmlFor="final-turn">Teacher move</Label>
         <Textarea
@@ -641,9 +763,16 @@ function TeacherCardPanel({
               <p>学生原话：{candidate.student_quotes.join(" / ")}</p>
               <p>{candidate.interpretation}</p>
               <p>缺失证据：{candidate.missing_evidence}</p>
+              <p>过度诊断风险：{candidate.risk_if_overdiagnosed}</p>
             </CardContent>
           </Card>
         ))}
+        {card.candidate_output.safety_notes.length > 0 ? (
+          <div className="rounded-md border border-border bg-background p-3 text-sm leading-6 text-muted-foreground">
+            <p className="mb-1 font-medium text-foreground">Safety notes</p>
+            <p>{card.candidate_output.safety_notes.join(" / ")}</p>
+          </div>
+        ) : null}
       </div>
       <div className="grid grid-cols-2 gap-2">
         {(["use", "edit", "delay", "skip"] as TeacherAction[]).map((action) => (
@@ -658,6 +787,15 @@ function TeacherCardPanel({
           </Button>
         ))}
       </div>
+    </div>
+  );
+}
+
+function MetaItem({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <span className="font-semibold text-foreground">{label}: </span>
+      <span>{value}</span>
     </div>
   );
 }

@@ -74,12 +74,21 @@ class StudentConfidence(StrEnum):
     HIGH = "high"
 
 
+class ExperimentCondition(StrEnum):
+    NO_AI = "no_ai"
+    STANDARD_LLM = "standard_llm"
+    OVER_COMMITTED = "over_committed"
+    EVIDENCE_ONLY = "evidence_only"
+    PROBEMATE = "probemate"
+
+
 class CheckpointCreate(BaseModel):
     question: str = Field(min_length=4, max_length=500)
     target_concept: str = Field(min_length=2, max_length=120)
     lesson_phase: LessonPhase
     current_activity: CurrentActivity = CurrentActivity.WHOLE_CLASS
     visibility_policy: VisibilityPolicy = VisibilityPolicy.TEACHER_ONLY
+    class_name: str | None = Field(default=None, max_length=120)
 
 
 class CheckpointUpdate(BaseModel):
@@ -159,7 +168,7 @@ class StudentResponseUpdate(BaseModel):
 
 class CandidateExplanation(BaseModel):
     label: str
-    student_quotes: list[str]
+    student_quotes: list[str] = Field(min_length=1)
     interpretation: str
     missing_evidence: str
     risk_if_overdiagnosed: str
@@ -172,11 +181,50 @@ class SuggestedTeacherMove(BaseModel):
 
 
 class CandidateOutput(BaseModel):
-    candidate_explanations: list[CandidateExplanation]
+    candidate_explanations: list[CandidateExplanation] = Field(min_length=1)
     evidence_state: EvidenceState
     distinguishability: str
-    suggested_teacher_moves: list[SuggestedTeacherMove]
+    suggested_teacher_moves: list[SuggestedTeacherMove] = Field(min_length=1)
     safety_notes: list[str] = Field(default_factory=list)
+
+
+class CandidateGenerationResult(BaseModel):
+    candidate_output: CandidateOutput | None = None
+    ai_provider: str = "mock"
+    model_name: str | None = None
+    prompt_version: str = "mock-v0.1"
+    ai_schema_version: str = "candidate-output-v0.1"
+    raw_llm_valid: bool = True
+    validation_error: str | None = None
+    provider_error: str | None = None
+    fallback_used: bool = False
+    downgrade_reason: str | None = None
+
+
+class AIProviderStatus(BaseModel):
+    ai_provider: str
+    model_name: str | None = None
+    configured: bool
+    fallback_available: bool = True
+
+
+class DataGovernancePolicy(BaseModel):
+    student_notice: str
+    retention_days: int
+    deidentify_exports_by_default: bool = True
+    student_misconception_labels_hidden: bool = True
+    raw_answer_access: str = "teacher_and_authorized_researcher"
+
+
+class AuthLoginRequest(BaseModel):
+    role: str = Field(pattern="^(teacher|researcher)$")
+    access_code: str = Field(min_length=1, max_length=200)
+
+
+class AuthSession(BaseModel):
+    role: str
+    access_token: str
+    auth_required: bool
 
 
 class InputPack(BaseModel):
@@ -197,6 +245,7 @@ class GateDecision(BaseModel):
     teacher_move: str
     gate_reasons: list[str]
     fallback_reason: str | None = None
+    downgrade_reason: str | None = None
     blocked_actions: list[GateMove] = Field(default_factory=list)
 
 
@@ -206,6 +255,15 @@ class TeacherCard(BaseModel):
     response_revision: int = 1
     gate_decision: GateDecision
     candidate_output: CandidateOutput
+    ai_provider: str = "mock"
+    model_name: str | None = None
+    prompt_version: str = "mock-v0.1"
+    ai_schema_version: str = "candidate-output-v0.1"
+    raw_llm_valid: bool = True
+    validation_error: str | None = None
+    provider_error: str | None = None
+    downgrade_reason: str | None = None
+    fallback_used: bool = False
     shown_at: datetime
 
 
@@ -214,6 +272,44 @@ class AnalyzeResponseResult(BaseModel):
     card: TeacherCard
     latency_ms: int
     cached: bool = False
+    ai_provider: str = "mock"
+    model_name: str | None = None
+    raw_llm_valid: bool = True
+    fallback_used: bool = False
+
+
+class ExperimentalConditionRequest(BaseModel):
+    response_id: str
+    condition: ExperimentCondition
+
+
+class ExperimentalConditionResult(BaseModel):
+    condition: ExperimentCondition
+    response_id: str
+    teacher_card: str
+    move: GateMove | None = None
+    ai_provider: str = "rule"
+    model_name: str | None = None
+    raw_llm_valid: bool = True
+    fallback_used: bool = False
+    downgrade_reason: str | None = None
+
+
+class PhaseManipulationRequest(BaseModel):
+    lesson_phase: LessonPhase
+    current_activity: CurrentActivity
+    answer_text: str = "向前，因为车还在往前走。"
+    question: str = "汽车向前运动，但速度越来越小，它的加速度方向是什么？"
+    target_concept: str = "加速度方向"
+
+
+class PhaseManipulationResult(BaseModel):
+    lesson_phase: LessonPhase
+    current_activity: CurrentActivity
+    move: GateMove
+    teacher_move: str
+    why_this_move: str
+    downgrade_reason: str | None = None
 
 
 class TeacherActionCreate(BaseModel):
@@ -245,6 +341,7 @@ class EpisodeLog(BaseModel):
     lesson_phase: LessonPhase | None = None
     current_activity: CurrentActivity | None = None
     visibility_policy: VisibilityPolicy | None = None
+    class_name: str | None = None
     response_source: ResponseSource | None = None
     confidence_level: StudentConfidence | None = None
     card_id: str | None = None
@@ -262,6 +359,14 @@ class EpisodeLog(BaseModel):
     gate_version: str = "gate-v0.1"
     schema_version: str = "episode-log-v0.2"
     prompt_version: str = "mock-v0.1"
+    ai_schema_version: str = "candidate-output-v0.1"
+    ai_provider: str = "mock"
+    model_name: str | None = None
+    raw_llm_valid: bool = True
+    validation_error: str | None = None
+    provider_error: str | None = None
+    downgrade_reason: str | None = None
+    fallback_used: bool = False
     queue_state: QueueState = QueueState.NONE
     teacher_action: TeacherAction | None = None
     teacher_final_turn: str | None = None

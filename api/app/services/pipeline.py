@@ -14,6 +14,8 @@ from app.schemas.models import (
     StudentResponseRead,
     TeacherCard,
 )
+from app.services.candidate_generators import get_candidate_generator, mock_candidate_generator
+from app.services.evidence_audit import quote_exists
 from app.services.store import new_id, store
 
 
@@ -42,104 +44,10 @@ def build_input_pack(checkpoint: CheckpointRead, response: StudentResponseRead) 
     )
 
 
-def mock_candidate_generator(input_pack: InputPack) -> CandidateOutput:
-    answer = input_pack.student_answer
-    concept = input_pack.target_concept
-
-    if "摩擦" in concept or "摩擦" in input_pack.question or "摩擦" in answer:
-        return CandidateOutput.model_validate(
-            {
-                "candidate_explanations": [
-                    {
-                        "label": "friction_opposes_motion_overgeneralization",
-                        "student_quotes": ["摩擦力总是阻碍运动"] if "摩擦力总是阻碍运动" in answer else [answer],
-                        "interpretation": "学生可能把摩擦力概括为总是与运动方向相反。",
-                        "missing_evidence": "需要确认学生是否区分相对运动趋势和实际运动方向。",
-                        "risk_if_overdiagnosed": "如果学生只是口语化表达，直接贴标签会过强。",
-                    }
-                ],
-                "evidence_state": "sufficient",
-                "distinguishability": "short_probe_can_distinguish",
-                "suggested_teacher_moves": [
-                    {
-                        "move_type_hint": "diagnostic_probe",
-                        "text": "如果书受到向后的摩擦力，是什么让书跟着箱子一起向前运动？",
-                        "answer_leakage_risk": "low",
-                    }
-                ],
-                "safety_notes": ["不要用“你混淆了”作为开头。"],
-            }
-        )
-
-    if "更重" in answer or "铁球" in input_pack.question:
-        return CandidateOutput.model_validate(
-            {
-                "candidate_explanations": [
-                    {
-                        "label": "heavier_object_falls_faster",
-                        "student_quotes": ["更重"] if "更重" in answer else [answer],
-                        "interpretation": "学生可能持有重物下落更快的直觉。",
-                        "missing_evidence": "需要确认这是探究前预测还是演示后的解释。",
-                        "risk_if_overdiagnosed": "探究开始前保留直觉可能比立即纠正更合适。",
-                    }
-                ],
-                "evidence_state": "ambiguous",
-                "distinguishability": "needs_observation_or_reason",
-                "suggested_teacher_moves": [
-                    {
-                        "move_type_hint": "ask_for_evidence",
-                        "text": "你说更重会先落地，能补一句你认为更重会怎样影响下落过程吗？",
-                        "answer_leakage_risk": "low",
-                    }
-                ],
-                "safety_notes": ["探究开始前不要过早纠正。"],
-            }
-        )
-
-    quote = "还在往前走" if "还在往前走" in answer else answer
-    evidence_state = "sufficient" if ("速度变小" in answer or "变化量" in answer) else "ambiguous"
-    hint = "diagnostic_probe" if evidence_state == "sufficient" else "ask_for_evidence"
-    text = (
-        "如果速度箭头在变短，速度变化量指向哪里？"
-        if evidence_state == "sufficient"
-        else "请画出此刻速度箭头和下一秒速度箭头，比较速度变化量方向。"
-    )
-    return CandidateOutput.model_validate(
-        {
-            "candidate_explanations": [
-                {
-                    "label": "possible_velocity_acceleration_confusion",
-                    "student_quotes": [quote],
-                    "interpretation": "学生可能把运动方向当作加速度方向，也可能只是没有表达速度变化量。",
-                    "missing_evidence": "尚未稳定说明速度变化量方向。",
-                    "risk_if_overdiagnosed": "可能把表达不完整误判为稳定误概念。",
-                }
-            ],
-            "evidence_state": evidence_state,
-            "distinguishability": "needs_representation",
-            "suggested_teacher_moves": [
-                {
-                    "move_type_hint": hint,
-                    "text": text,
-                    "answer_leakage_risk": "low",
-                }
-            ],
-            "safety_notes": ["先追证据，不要直接说学生混淆速度和加速度。"],
-        }
-    )
-
-
-def quote_exists(input_pack: InputPack, candidate_output: CandidateOutput) -> bool:
-    for candidate in candidate_output.candidate_explanations:
-        for quote in candidate.student_quotes:
-            if quote and quote in input_pack.student_answer:
-                return True
-    return False
-
-
 def decide_gate(input_pack: InputPack, candidate_output: CandidateOutput) -> GateDecision:
     suggested = candidate_output.suggested_teacher_moves[0]
     has_quote = quote_exists(input_pack, candidate_output)
+    answer_leakage_risk = suggested.answer_leakage_risk.strip().lower()
 
     if input_pack.current_activity in BAD_TIMING_ACTIVITIES:
         return GateDecision(
@@ -148,6 +56,7 @@ def decide_gate(input_pack: InputPack, candidate_output: CandidateOutput) -> Gat
             teacher_move="暂不打断当前活动。已加入讨论后回看队列。",
             gate_reasons=["bad_timing", "protect_classroom_flow"],
             fallback_reason="bad_timing",
+            downgrade_reason="bad_timing",
             blocked_actions=[GateMove.ASK_FOR_EVIDENCE, GateMove.DIAGNOSTIC_PROBE],
         )
 
@@ -158,6 +67,7 @@ def decide_gate(input_pack: InputPack, candidate_output: CandidateOutput) -> Gat
             teacher_move="先请学生补一句理由或画出关键表征。",
             gate_reasons=["no_valid_quote", "downgrade_to_evidence"],
             fallback_reason="no_quote",
+            downgrade_reason="no_valid_quote",
             blocked_actions=[GateMove.DIAGNOSTIC_PROBE],
         )
 
@@ -167,6 +77,17 @@ def decide_gate(input_pack: InputPack, candidate_output: CandidateOutput) -> Gat
             why_this_move="学生回答可疑，但证据还不足以支持诊断；需要先补一个可判断证据。",
             teacher_move=suggested.text,
             gate_reasons=["student_quote_exists", "evidence_ambiguous", "short_probe_can_add_evidence"],
+            downgrade_reason="evidence_ambiguous",
+            blocked_actions=[GateMove.DIAGNOSTIC_PROBE],
+        )
+
+    if answer_leakage_risk == "high":
+        return GateDecision(
+            move=GateMove.ASK_FOR_EVIDENCE,
+            why_this_move="建议话术有较高答案泄露风险，因此先改为要求学生补证据。",
+            teacher_move="请先说明你依据哪一部分现象或表征作出判断。",
+            gate_reasons=["student_quote_exists", "answer_leakage_risk", "downgrade_to_evidence"],
+            downgrade_reason="answer_leakage_risk",
             blocked_actions=[GateMove.DIAGNOSTIC_PROBE],
         )
 
@@ -190,11 +111,22 @@ def analyze_student_response(
                 card=cached_card,
                 latency_ms=0,
                 cached=True,
+                ai_provider=cached_card.ai_provider,
+                model_name=cached_card.model_name,
+                raw_llm_valid=cached_card.raw_llm_valid,
+                fallback_used=cached_card.fallback_used,
             )
 
     input_pack = build_input_pack(checkpoint, response)
-    candidate_output = mock_candidate_generator(input_pack)
+    generation_result = get_candidate_generator().generate(input_pack)
+    if generation_result.candidate_output is None:
+        raise RuntimeError("Candidate generator returned no candidate output")
+    candidate_output = generation_result.candidate_output
     gate_decision = decide_gate(input_pack, candidate_output)
+    downgrade_reason = gate_decision.downgrade_reason
+    if generation_result.downgrade_reason and gate_decision.downgrade_reason in {None, "evidence_ambiguous"}:
+        downgrade_reason = generation_result.downgrade_reason
+        gate_decision = gate_decision.model_copy(update={"downgrade_reason": downgrade_reason})
     ai_run_id = new_id("run")
     card = TeacherCard(
         id=new_id("card"),
@@ -202,6 +134,15 @@ def analyze_student_response(
         response_revision=response.revision,
         gate_decision=gate_decision,
         candidate_output=candidate_output,
+        ai_provider=generation_result.ai_provider,
+        model_name=generation_result.model_name,
+        prompt_version=generation_result.prompt_version,
+        ai_schema_version=generation_result.ai_schema_version,
+        raw_llm_valid=generation_result.raw_llm_valid,
+        validation_error=generation_result.validation_error,
+        provider_error=generation_result.provider_error,
+        downgrade_reason=downgrade_reason,
+        fallback_used=generation_result.fallback_used,
         shown_at=datetime.now(timezone.utc),
     )
     latency_ms = int((perf_counter() - started) * 1000)
@@ -218,4 +159,8 @@ def analyze_student_response(
         card=saved_card,
         latency_ms=latency_ms,
         cached=was_cached_during_save,
+        ai_provider=saved_card.ai_provider,
+        model_name=saved_card.model_name,
+        raw_llm_valid=saved_card.raw_llm_valid,
+        fallback_used=saved_card.fallback_used,
     )

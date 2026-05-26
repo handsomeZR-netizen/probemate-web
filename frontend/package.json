@@ -1,11 +1,12 @@
 {
   "name": "probemate-frontend",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "scripts": {
     "dev": "next dev -p 3000",
     "build": "next build",
-    "lint": "eslint . --max-warnings=0"
+    "lint": "eslint . --max-warnings=0",
+    "test:e2e": "node scripts/playwright-flow-test.cjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.5.0",

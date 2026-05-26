@@ -20,6 +20,12 @@ export type TeacherAction = "use" | "edit" | "delay" | "skip";
 export type ResponseSource = "student_qr" | "teacher_representative" | "imported_episode";
 export type QueueState = "none" | "queued" | "resolved" | "dismissed";
 export type StudentConfidence = "unsure" | "low" | "medium" | "high";
+export type ExperimentCondition =
+  | "no_ai"
+  | "standard_llm"
+  | "over_committed"
+  | "evidence_only"
+  | "probemate";
 
 export interface Checkpoint {
   id: string;
@@ -29,6 +35,7 @@ export interface Checkpoint {
   lesson_phase: LessonPhase;
   current_activity: CurrentActivity;
   visibility_policy: "teacher_only" | "anonymous_representative" | "allow_public_display";
+  class_name: string | null;
   status: "open" | "closed";
   created_at: string;
 }
@@ -70,12 +77,19 @@ export interface CandidateExplanation {
   risk_if_overdiagnosed: string;
 }
 
+export interface SuggestedTeacherMove {
+  move_type_hint: GateMove;
+  text: string;
+  answer_leakage_risk: string;
+}
+
 export interface GateDecision {
   move: GateMove;
   why_this_move: string;
   teacher_move: string;
   gate_reasons: string[];
   fallback_reason: string | null;
+  downgrade_reason: string | null;
   blocked_actions: GateMove[];
 }
 
@@ -88,8 +102,18 @@ export interface TeacherCard {
     candidate_explanations: CandidateExplanation[];
     evidence_state: string;
     distinguishability: string;
+    suggested_teacher_moves: SuggestedTeacherMove[];
     safety_notes: string[];
   };
+  ai_provider: string;
+  model_name: string | null;
+  prompt_version: string;
+  ai_schema_version: string;
+  raw_llm_valid: boolean;
+  validation_error: string | null;
+  provider_error: string | null;
+  downgrade_reason: string | null;
+  fallback_used: boolean;
   shown_at: string;
 }
 
@@ -98,6 +122,10 @@ export interface AnalyzeResponseResult {
   card: TeacherCard;
   latency_ms: number;
   cached: boolean;
+  ai_provider: string;
+  model_name: string | null;
+  raw_llm_valid: boolean;
+  fallback_used: boolean;
 }
 
 export interface EpisodeLog {
@@ -113,6 +141,7 @@ export interface EpisodeLog {
   lesson_phase: LessonPhase | null;
   current_activity: CurrentActivity | null;
   visibility_policy: Checkpoint["visibility_policy"] | null;
+  class_name: string | null;
   response_source: ResponseSource | null;
   confidence_level: StudentConfidence | null;
   card_id: string | null;
@@ -130,6 +159,14 @@ export interface EpisodeLog {
   gate_version: string;
   schema_version: string;
   prompt_version: string;
+  ai_schema_version: string;
+  ai_provider: string;
+  model_name: string | null;
+  raw_llm_valid: boolean;
+  validation_error: string | null;
+  provider_error: string | null;
+  downgrade_reason: string | null;
+  fallback_used: boolean;
   queue_state: QueueState;
   teacher_action: TeacherAction | null;
   teacher_final_turn: string | null;
@@ -147,4 +184,46 @@ export interface DataDictionaryField {
   source: string;
   allowed_values: string[];
   pii_risk: string;
+}
+
+export interface AIProviderStatus {
+  ai_provider: string;
+  model_name: string | null;
+  configured: boolean;
+  fallback_available: boolean;
+}
+
+export interface ExperimentalConditionResult {
+  condition: ExperimentCondition;
+  response_id: string;
+  teacher_card: string;
+  move: GateMove | null;
+  ai_provider: string;
+  model_name: string | null;
+  raw_llm_valid: boolean;
+  fallback_used: boolean;
+  downgrade_reason: string | null;
+}
+
+export interface PhaseManipulationResult {
+  lesson_phase: LessonPhase;
+  current_activity: CurrentActivity;
+  move: GateMove;
+  teacher_move: string;
+  why_this_move: string;
+  downgrade_reason: string | null;
+}
+
+export interface DataGovernancePolicy {
+  student_notice: string;
+  retention_days: number;
+  deidentify_exports_by_default: boolean;
+  student_misconception_labels_hidden: boolean;
+  raw_answer_access: string;
+}
+
+export interface AuthSession {
+  role: string;
+  access_token: string;
+  auth_required: boolean;
 }
