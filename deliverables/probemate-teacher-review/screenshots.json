@@ -1,0 +1,52 @@
+[
+  {
+    "file": "01_landing.png",
+    "url": "/zh",
+    "bytes": 257424
+  },
+  {
+    "file": "02_teacher_home.png",
+    "url": "/zh/teacher",
+    "bytes": 130909
+  },
+  {
+    "file": "03_teacher_checkpoint_workspace.png",
+    "url": "/zh/teacher/checkpoints/ckpt_79b53ca1d1",
+    "bytes": 125695
+  },
+  {
+    "file": "04_student_entry.png",
+    "url": "/zh/s/650A3E",
+    "bytes": 36569
+  },
+  {
+    "file": "05_study_builder.png",
+    "url": "/zh/study-builder",
+    "bytes": 107801
+  },
+  {
+    "file": "06_research_console.png",
+    "url": "/zh/research",
+    "bytes": 451367
+  },
+  {
+    "file": "07_phase_manipulation.png",
+    "url": "/zh/demo/phase-manipulation",
+    "bytes": 62422
+  },
+  {
+    "file": "08_settings.png",
+    "url": "/zh/settings",
+    "bytes": 79444
+  },
+  {
+    "file": "09_ai_settings.png",
+    "url": "/zh/settings/ai",
+    "bytes": 79922
+  },
+  {
+    "file": "10_login.png",
+    "url": "/zh/login",
+    "bytes": 22787
+  }
+]

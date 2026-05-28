@@ -28,6 +28,28 @@
     --font-heading: var(--font-sans);
   }
 
+  .dark {
+    --background: 210 20% 10%;
+    --foreground: 72 20% 92%;
+    --card: 210 20% 13%;
+    --card-foreground: 72 20% 92%;
+    --popover: 210 20% 13%;
+    --popover-foreground: 72 20% 92%;
+    --primary: 184 38% 44%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 76 12% 18%;
+    --secondary-foreground: 72 20% 92%;
+    --muted: 76 10% 16%;
+    --muted-foreground: 76 12% 65%;
+    --accent: 184 20% 20%;
+    --accent-foreground: 184 38% 72%;
+    --destructive: 12 72% 48%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 76 10% 24%;
+    --input: 76 10% 24%;
+    --ring: 184 38% 44%;
+  }
+
   * {
     @apply border-border outline-ring/50;
   }
@@ -43,5 +65,42 @@
   button:not(:disabled),
   [role="button"]:not(:disabled) {
     cursor: pointer;
+  }
+
+  .settings-popover-backdrop {
+    opacity: 0;
+    backdrop-filter: blur(0);
+    transition:
+      opacity 120ms linear,
+      backdrop-filter 120ms linear;
+  }
+
+  .settings-popover-backdrop[data-open] {
+    opacity: 1;
+    backdrop-filter: blur(6px);
+  }
+
+  .settings-popover {
+    transform-origin: var(--transform-origin);
+    transition:
+      opacity 180ms linear,
+      transform 180ms cubic-bezier(0.22, 1, 0.36, 1),
+      filter 180ms linear;
+  }
+
+  .settings-popover[data-starting-style],
+  .settings-popover[data-ending-style] {
+    opacity: 0;
+    filter: blur(3px);
+    transform: translateY(-6px) scale(0.96);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .settings-popover-backdrop,
+    .settings-popover {
+      transition-duration: 1ms;
+      transform: none;
+      filter: none;
+    }
   }
 }

@@ -13,6 +13,7 @@ from app.schemas.models import (
     CheckpointStatus,
     CheckpointUpdate,
     CurrentActivity,
+    EpisodeAnnotationUpdate,
     EpisodeLog,
     ExperimentCondition,
     GateMove,
@@ -22,6 +23,7 @@ from app.schemas.models import (
     StudentResponseCreate,
     StudentResponseRead,
     StudentResponseUpdate,
+    StudyNextTurnRequest,
     TeacherAction,
     TeacherActionCreate,
     TeacherActionRead,
@@ -149,6 +151,16 @@ class InMemoryStore:
         )
         self.seeded = True
         self.persist()
+
+    def clear_all(self) -> None:
+        with self._lock:
+            self.checkpoints = {}
+            self.responses = {}
+            self.cards = {}
+            self.teacher_actions = {}
+            self.episode_logs = {}
+            self.seeded = True
+            self.persist()
 
     def list_checkpoints(self) -> list[CheckpointRead]:
         with self._lock:
@@ -346,6 +358,37 @@ class InMemoryStore:
             self.persist()
             return log
 
+    def update_episode_log_annotation(
+        self, log_id: str, payload: EpisodeAnnotationUpdate
+    ) -> EpisodeLog | None:
+        with self._lock:
+            log = self.episode_logs.get(log_id)
+            if log is None:
+                return None
+            updated = log.model_copy(update=payload.model_dump(exclude_unset=True))
+            self.episode_logs[log_id] = updated
+            self.persist()
+            return updated
+
+    def record_study_next_turn(self, payload: StudyNextTurnRequest) -> EpisodeLog | None:
+        with self._lock:
+            log = self.episode_logs.get(payload.episode_log_id)
+            if log is None:
+                return None
+            updated = log.model_copy(
+                update={
+                    "teacher_action": TeacherAction.USE,
+                    "teacher_final_turn": payload.teacher_next_turn,
+                    "decision_time_ms": payload.decision_time_ms,
+                    "study_perceived_load": payload.perceived_load,
+                    "study_note": payload.note,
+                    "queue_state": QueueState.RESOLVED,
+                }
+            )
+            self.episode_logs[payload.episode_log_id] = updated
+            self.persist()
+            return updated
+
     def get_card(self, card_id: str) -> TeacherCard | None:
         with self._lock:
             return self.cards.get(card_id)
@@ -353,6 +396,21 @@ class InMemoryStore:
     def get_latest_card_for_response(self, response_id: str) -> TeacherCard | None:
         with self._lock:
             return self._latest_card_for_response_unlocked(response_id)
+
+    def clear_cards_for_response(self, response_id: str) -> int:
+        with self._lock:
+            response = self.responses.get(response_id)
+            ids_to_delete = [
+                card_id
+                for card_id, card in self.cards.items()
+                if card.response_id == response_id
+                and (response is None or card.response_revision == response.revision)
+            ]
+            for card_id in ids_to_delete:
+                del self.cards[card_id]
+            if ids_to_delete:
+                self.persist()
+            return len(ids_to_delete)
 
     def create_teacher_action(self, payload: TeacherActionCreate) -> TeacherActionRead:
         with self._lock:

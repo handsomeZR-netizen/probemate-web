@@ -51,6 +51,15 @@ CSV_COLUMNS = [
     "queue_note",
     "decision_time_ms",
     "checkpoint_duration_ms",
+    "study_perceived_load",
+    "study_note",
+    "expert_preferred_move",
+    "commitment_distance",
+    "harmful_over_commitment",
+    "harmful_under_commitment",
+    "answer_leakage",
+    "self_correction_support",
+    "annotation_note",
 ]
 
 ID_COLUMNS = {"id", "checkpoint_id", "response_id", "card_id", "ai_run_id"}
@@ -59,6 +68,8 @@ TEXT_DEIDENTIFY_COLUMNS = {
     "teacher_final_turn",
     "teacher_feedback",
     "queue_note",
+    "study_note",
+    "annotation_note",
 }
 HASH_DEIDENTIFY_COLUMNS = {"class_name"}
 

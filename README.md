@@ -25,6 +25,12 @@ ProbeMate Web 是一个面向课堂短答诊断的教师端研究原型。它不
 - Optional production storage: PostgreSQL via `STORE_BACKEND=postgres`
 - Optional access control: teacher/researcher access-code login
 - E2E testing: Playwright only, no devtools script
+- P0 UX hotfix: global AppShell, breadcrumbs, provider/storage/auth status, and Command Center metrics
+- P1 AI transparency: `/settings/ai`, provider smoke test, explicit mock/baseline warnings, card cache controls, and phase demo mock/current provider mode
+- P2 Live Classroom workspace: classroom entry projection with QR code, three-column checkpoint dashboard, context switching, response search/filter, and rule-based representative response recommendations
+- P3 Study Builder: `/study-builder` generates randomized blind five-condition materials, Study 2 rating templates, and Study 3 timed next-turn records.
+- P4 Evidence Console: research dashboard includes provider/condition/downgrade distributions plus over/under-commitment annotation fields.
+- P5 Demo data controls: global mode badge, standard demo episode reset, and dev-store clearing from settings.
 - Last verified checks: `uv run pytest`, `npm run lint`, `npm run build`, `npm run test:e2e`
 
 ## Core Workflow
@@ -59,7 +65,11 @@ Teacher creates checkpoint
 
 - 创建 checkpoint，设置班级/课次、教学阶段、当前活动和展示策略。
 - 使用课堂模板快速建题。
+- 在 Live Classroom 首页查看 open/closed checkpoint、模板数和最近课堂。
+- 在 checkpoint 工作台内投屏学生入口二维码、复制学生链接、开关提交状态。
+- 在工作台内快速切换全班收集、练习追问、同伴讨论、实验观察和收束回看语境。
 - 查看学生短答，选择代表回答或录入教师代表回答。
+- 搜索/筛选短答，并查看规则聚类给出的代表回答推荐。
 - 运行 LLM-backed diagnostic gate。
 - 查看证据引用、候选解释、缺失证据、过度诊断风险、安全提示、provider/model/latency 和降级原因。
 - 生成 `no_ai`、`standard_llm`、`over_committed`、`evidence_only`、`probemate` 五种实验条件材料。
@@ -79,13 +89,26 @@ Teacher creates checkpoint
 - 查看 episode logs。
 - 按 move、回答来源、教师动作、队列状态、condition 筛选。
 - 查看 LLM 运行质量：fallback、schema failure、invalid quote downgrade、bad timing hold、平均延迟等。
+- 查看 Real LLM、Mock、Baseline、Evidence-first、Over、Under 指标。
+- 按 provider、condition、downgrade reason 查看分布。
+- 对 episode 标注 expert preferred move、commitment distance、harmful over/under-commitment、answer leakage、self-correction support。
 - 导出 CSV，默认去标识化。
 - 查看数据字典。
 
+### Study Builder
+
+- 从已有 episode 生成 `no_ai`、`standard_llm`、`over_committed`、`evidence_only`、`probemate` 五条件材料。
+- 自动随机化并盲化为 Assistant A/B/C/D/E。
+- 预览每个条件下教师看到的 card、move、provider 和 fallback 状态。
+- 导出 `materials.csv`、Study 2 `ratings.csv` 模板、Study 3 `next-turns.csv` 和 `episode_logs.csv`。
+- Study 3 timed next-turn 会写回对应 episode log，记录教师下一句话、decision time 和主观负荷。
+
 ### Demo
 
-- `/demo/phase-manipulation` 展示同一句短答在不同课堂阶段下的 Ask / Probe / Hold 变化。
+- `/demo/phase-manipulation` 展示同一句短答在不同课堂阶段下的 Ask / Probe / Hold 变化，并可选择 mock 或当前 provider。
 - `/ai/provider-status` 展示当前 provider、model 和配置状态。
+- `/settings/ai` 展示 provider、model、配置状态、最近一次 AI run，并可运行 smoke test。
+- `/settings/ai` 也提供 demo/research/classroom-pilot mode 切换和标准 demo 数据导入。
 
 ## Tech Stack
 
@@ -129,13 +152,19 @@ web-app/
       page.tsx
       login/page.tsx
       demo/phase-manipulation/page.tsx
+      settings/ai/page.tsx
       teacher/page.tsx
       teacher/checkpoints/[id]/page.tsx
       s/[checkpointCode]/page.tsx
       research/page.tsx
+      study-builder/page.tsx
     lib/api.ts
     lib/types.ts
     scripts/playwright-flow-test.cjs
+  scripts/
+    run-api-mock.ps1
+    run-api-deepseek.ps1
+    run-api-openai.ps1
   shared/
   .env.example
   plan.md
@@ -170,10 +199,13 @@ DATABASE_URL=
 PROBEMATE_STORE_PATH=
 
 DATA_RETENTION_DAYS=180
+PROBEMATE_MODE=demo
 AUTH_SECRET=
 TEACHER_ACCESS_CODE=
 RESEARCH_ACCESS_CODE=
 ```
+
+The API loads environment variables from both `web-app/.env` and `web-app/api/.env` with `override=false`. Existing shell variables win, which lets the run scripts force a provider without rewriting `.env`.
 
 Provider modes:
 
@@ -203,6 +235,22 @@ cd api
 uv run uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
+Provider-specific API scripts:
+
+```powershell
+.\scripts\run-api-mock.ps1
+.\scripts\run-api-deepseek.ps1
+.\scripts\run-api-openai.ps1
+```
+
+For real providers, set the key in the shell or `.env` before using the script:
+
+```powershell
+$env:DEEPSEEK_API_KEY="..."
+$env:AI_MODEL="deepseek-v4-flash"
+.\scripts\run-api-deepseek.ps1
+```
+
 Start the frontend:
 
 ```powershell
@@ -218,6 +266,7 @@ http://localhost:3000/login
 http://localhost:3000/teacher
 http://localhost:3000/research
 http://localhost:3000/demo/phase-manipulation
+http://localhost:3000/settings/ai
 http://localhost:3000/s/{checkpointCode}
 ```
 
@@ -235,6 +284,11 @@ $env:NEXT_PUBLIC_API_BASE_URL="http://127.0.0.1:8001"
 | --- | --- | --- |
 | POST | `/auth/login` | access-code login for teacher or researcher |
 | GET | `/ai/provider-status` | provider/model/configured status |
+| POST | `/ai/provider-smoke-test` | run current provider through candidate generation, quote audit, and gate |
+| GET | `/system/status` | command center provider/storage/auth/run counts |
+| PATCH | `/system/mode` | switch demo/research/classroom-pilot mode |
+| POST | `/system/demo-data/reset` | reset local store to standard demo episodes |
+| POST | `/system/demo-data/clear` | clear local dev store |
 | GET | `/data-governance` | student notice and retention policy |
 
 ### Checkpoints and Responses
@@ -252,6 +306,9 @@ $env:NEXT_PUBLIC_API_BASE_URL="http://127.0.0.1:8001"
 | PATCH | `/responses/{response_id}` | update response or representative state |
 | POST | `/responses/{response_id}/analyze` | run diagnostic gate |
 | POST | `/responses/{response_id}/analyze?rerun=true` | force rerun |
+| DELETE | `/responses/{response_id}/analysis-cache` | clear cached card for the current response revision |
+| POST | `/study-builder/materials` | generate blind condition materials for a response |
+| POST | `/study-builder/next-turns` | record Study 3 timed teacher next-turn for a generated material |
 
 ### Experiment and Research
 
@@ -261,6 +318,8 @@ $env:NEXT_PUBLIC_API_BASE_URL="http://127.0.0.1:8001"
 | POST | `/demo/phase-manipulation` | return Ask / Probe / Hold demonstration output |
 | POST | `/teacher-actions` | record Use / Edit / Delay / Skip |
 | GET | `/research/episode-logs` | query episode logs |
+| GET | `/research/evidence-summary` | aggregate evidence-console metrics |
+| PATCH | `/research/episode-logs/{log_id}/annotation` | update expert over/under annotations |
 | GET | `/research/episode-logs.csv` | export CSV |
 | GET | `/research/data-dictionary` | field dictionary |
 
@@ -273,6 +332,7 @@ $env:NEXT_PUBLIC_API_BASE_URL="http://127.0.0.1:8001"
 - raw LLM validity, validation error, provider error and fallback state.
 - quote/gate reasons, downgrade reason and blocked actions.
 - teacher action, edit distance proxy, decision time and queue state.
+- Study 3 timed next-turn text, perceived load and study notes.
 - experimental condition.
 
 CSV export defaults to `deidentify=true`. It hashes IDs and class/session names, and redacts potentially identifying free text such as student answers, final teacher turns, teacher feedback and queue notes.

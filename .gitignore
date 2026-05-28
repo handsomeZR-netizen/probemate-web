@@ -6,9 +6,11 @@ api/.venv/
 frontend/.next/
 frontend/out/
 frontend/dist/
+*.tsbuildinfo
 
 # Runtime data
 api/data/
+run-logs/
 *.log
 
 # Test and cache files

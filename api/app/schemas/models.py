@@ -82,6 +82,17 @@ class ExperimentCondition(StrEnum):
     PROBEMATE = "probemate"
 
 
+class ProviderRunMode(StrEnum):
+    MOCK = "mock"
+    CURRENT = "current"
+
+
+class AppMode(StrEnum):
+    DEMO = "demo"
+    RESEARCH = "research"
+    CLASSROOM_PILOT = "classroom_pilot"
+
+
 class CheckpointCreate(BaseModel):
     question: str = Field(min_length=4, max_length=500)
     target_concept: str = Field(min_length=2, max_length=120)
@@ -208,6 +219,24 @@ class AIProviderStatus(BaseModel):
     fallback_available: bool = True
 
 
+class SystemStatus(BaseModel):
+    app_mode: AppMode = AppMode.DEMO
+    ai_provider: str
+    model_name: str | None = None
+    ai_configured: bool
+    fallback_available: bool = True
+    storage_backend: str
+    auth_required: bool
+    total_checkpoints: int
+    total_episodes: int
+    real_llm_runs: int
+    mock_runs: int
+    baseline_runs: int
+    last_ai_run_at: datetime | None = None
+    last_ai_run_provider: str | None = None
+    last_ai_run_model: str | None = None
+
+
 class DataGovernancePolicy(BaseModel):
     student_notice: str
     retention_days: int
@@ -278,6 +307,39 @@ class AnalyzeResponseResult(BaseModel):
     fallback_used: bool = False
 
 
+class AnalysisCacheClearResult(BaseModel):
+    response_id: str
+    cleared_cards: int
+
+
+class AIProviderSmokeTestRequest(BaseModel):
+    question: str = Field(
+        default="汽车向前运动，但速度越来越小，它的加速度方向是什么？",
+        min_length=4,
+        max_length=500,
+    )
+    answer_text: str = Field(default="向前，因为车还在往前走。", min_length=1, max_length=200)
+    target_concept: str = Field(default="加速度方向", min_length=2, max_length=120)
+    lesson_phase: LessonPhase = LessonPhase.PRACTICE
+    current_activity: CurrentActivity = CurrentActivity.WHOLE_CLASS
+    visibility_policy: VisibilityPolicy = VisibilityPolicy.TEACHER_ONLY
+
+
+class AIProviderSmokeTestResult(BaseModel):
+    ai_provider: str
+    model_name: str | None = None
+    configured: bool
+    latency_ms: int
+    raw_llm_valid: bool
+    fallback_used: bool
+    quote_audit_passed: bool
+    validation_error: str | None = None
+    provider_error: str | None = None
+    downgrade_reason: str | None = None
+    gate_decision: GateDecision
+    candidate_output: CandidateOutput
+
+
 class ExperimentalConditionRequest(BaseModel):
     response_id: str
     condition: ExperimentCondition
@@ -286,6 +348,7 @@ class ExperimentalConditionRequest(BaseModel):
 class ExperimentalConditionResult(BaseModel):
     condition: ExperimentCondition
     response_id: str
+    episode_log_id: str | None = None
     teacher_card: str
     move: GateMove | None = None
     ai_provider: str = "rule"
@@ -295,9 +358,59 @@ class ExperimentalConditionResult(BaseModel):
     downgrade_reason: str | None = None
 
 
+class StudyMaterialRequest(BaseModel):
+    response_id: str
+    conditions: list[ExperimentCondition] = Field(
+        default_factory=lambda: [
+            ExperimentCondition.NO_AI,
+            ExperimentCondition.STANDARD_LLM,
+            ExperimentCondition.OVER_COMMITTED,
+            ExperimentCondition.EVIDENCE_ONLY,
+            ExperimentCondition.PROBEMATE,
+        ],
+        min_length=1,
+    )
+    blind_labels: bool = True
+    randomize_order: bool = False
+
+
+class StudyMaterialRow(BaseModel):
+    material_id: str
+    episode_log_id: str | None = None
+    assistant_label: str
+    condition: ExperimentCondition
+    response_id: str
+    question: str
+    student_answer: str
+    target_concept: str | None = None
+    lesson_phase: LessonPhase | None = None
+    current_activity: CurrentActivity | None = None
+    teacher_card: str
+    move: GateMove | None = None
+    ai_provider: str
+    model_name: str | None = None
+    raw_llm_valid: bool = True
+    fallback_used: bool = False
+    downgrade_reason: str | None = None
+
+
+class StudyMaterialResult(BaseModel):
+    response_id: str
+    rows: list[StudyMaterialRow]
+
+
+class StudyNextTurnRequest(BaseModel):
+    episode_log_id: str
+    teacher_next_turn: str = Field(min_length=1, max_length=500)
+    decision_time_ms: int = Field(ge=0)
+    perceived_load: int | None = Field(default=None, ge=1, le=7)
+    note: str | None = Field(default=None, max_length=500)
+
+
 class PhaseManipulationRequest(BaseModel):
     lesson_phase: LessonPhase
     current_activity: CurrentActivity
+    provider_mode: ProviderRunMode = ProviderRunMode.MOCK
     answer_text: str = "向前，因为车还在往前走。"
     question: str = "汽车向前运动，但速度越来越小，它的加速度方向是什么？"
     target_concept: str = "加速度方向"
@@ -306,6 +419,12 @@ class PhaseManipulationRequest(BaseModel):
 class PhaseManipulationResult(BaseModel):
     lesson_phase: LessonPhase
     current_activity: CurrentActivity
+    provider_mode: ProviderRunMode = ProviderRunMode.MOCK
+    ai_provider: str = "mock"
+    model_name: str | None = None
+    raw_llm_valid: bool = True
+    fallback_used: bool = False
+    quote_audit_passed: bool = True
     move: GateMove
     teacher_move: str
     why_this_move: str
@@ -374,7 +493,61 @@ class EpisodeLog(BaseModel):
     queue_note: str | None = None
     decision_time_ms: int | None = None
     checkpoint_duration_ms: int | None = None
+    study_perceived_load: int | None = Field(default=None, ge=1, le=7)
+    study_note: str | None = Field(default=None, max_length=500)
+    expert_preferred_move: GateMove | None = None
+    commitment_distance: int | None = Field(default=None, ge=-2, le=2)
+    harmful_over_commitment: bool | None = None
+    harmful_under_commitment: bool | None = None
+    answer_leakage: bool | None = None
+    self_correction_support: int | None = Field(default=None, ge=1, le=5)
+    annotation_note: str | None = Field(default=None, max_length=500)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class StudyNextTurnResult(BaseModel):
+    episode_log: EpisodeLog
+
+
+class EpisodeAnnotationUpdate(BaseModel):
+    expert_preferred_move: GateMove | None = None
+    commitment_distance: int | None = Field(default=None, ge=-2, le=2)
+    harmful_over_commitment: bool | None = None
+    harmful_under_commitment: bool | None = None
+    answer_leakage: bool | None = None
+    self_correction_support: int | None = Field(default=None, ge=1, le=5)
+    annotation_note: str | None = Field(default=None, max_length=500)
+
+
+class ResearchEvidenceSummary(BaseModel):
+    total_episodes: int
+    real_llm_runs: int
+    mock_runs: int
+    baseline_runs: int
+    fallback_count: int
+    invalid_llm_count: int
+    evidence_first_actions: int
+    bad_timing_holds: int
+    no_quote_downgrades: int
+    answer_leakage_downgrades: int
+    teacher_edits: int
+    teacher_delays: int
+    harmful_over_commitment: int
+    harmful_under_commitment: int
+    provider_counts: dict[str, int]
+    condition_counts: dict[str, int]
+    downgrade_counts: dict[str, int]
+
+
+class SystemModeUpdate(BaseModel):
+    app_mode: AppMode
+
+
+class DemoDataResult(BaseModel):
+    app_mode: AppMode
+    checkpoints: int
+    responses: int
+    episode_logs: int
 
 
 class DataDictionaryField(BaseModel):

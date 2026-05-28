@@ -1,9 +1,21 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 import os
+from pathlib import Path
 
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
+
+def load_environment_files() -> None:
+    api_dir = Path(__file__).resolve().parents[1]
+    repo_dir = api_dir.parent
+    for env_path in (repo_dir / ".env", api_dir / ".env"):
+        load_dotenv(env_path, override=False)
+
+
+load_environment_files()
 
 from app.api.routes import router
 from app.services.store import store

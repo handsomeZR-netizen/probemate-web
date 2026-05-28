@@ -5,9 +5,11 @@ from app.schemas.models import (
     CheckpointRead,
     CheckpointUpdate,
     EpisodeLog,
+    EpisodeAnnotationUpdate,
     StudentResponseCreate,
     StudentResponseRead,
     StudentResponseUpdate,
+    StudyNextTurnRequest,
     TeacherActionCreate,
     TeacherActionRead,
     TeacherCard,
@@ -16,6 +18,8 @@ from app.schemas.models import (
 
 class StoreRepository(Protocol):
     def seed(self) -> None: ...
+
+    def clear_all(self) -> None: ...
 
     def list_checkpoints(self) -> list[CheckpointRead]: ...
 
@@ -46,9 +50,17 @@ class StoreRepository(Protocol):
 
     def save_episode_log(self, log: EpisodeLog) -> EpisodeLog: ...
 
+    def update_episode_log_annotation(
+        self, log_id: str, payload: EpisodeAnnotationUpdate
+    ) -> EpisodeLog | None: ...
+
+    def record_study_next_turn(self, payload: StudyNextTurnRequest) -> EpisodeLog | None: ...
+
     def get_card(self, card_id: str) -> TeacherCard | None: ...
 
     def get_latest_card_for_response(self, response_id: str) -> TeacherCard | None: ...
+
+    def clear_cards_for_response(self, response_id: str) -> int: ...
 
     def create_teacher_action(self, payload: TeacherActionCreate) -> TeacherActionRead: ...
 

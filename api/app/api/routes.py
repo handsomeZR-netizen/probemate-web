@@ -1,7 +1,12 @@
+import os
+
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
 
 from app.schemas.models import (
     AIProviderStatus,
+    AIProviderSmokeTestRequest,
+    AIProviderSmokeTestResult,
+    AnalysisCacheClearResult,
     AnalyzeResponseResult,
     AuthLoginRequest,
     AuthSession,
@@ -12,6 +17,8 @@ from app.schemas.models import (
     CheckpointUpdate,
     DataDictionaryField,
     DataGovernancePolicy,
+    DemoDataResult,
+    EpisodeAnnotationUpdate,
     EpisodeLog,
     ExperimentCondition,
     ExperimentalConditionRequest,
@@ -21,21 +28,32 @@ from app.schemas.models import (
     PhaseManipulationResult,
     QueueState,
     ResponseSource,
+    ResearchEvidenceSummary,
     StudentResponseCreate,
     StudentResponseRead,
     StudentResponseUpdate,
+    StudyMaterialRequest,
+    StudyMaterialResult,
+    StudyNextTurnRequest,
+    StudyNextTurnResult,
+    SystemModeUpdate,
+    SystemStatus,
     TeacherActionCreate,
     TeacherActionRead,
     TeacherAction,
 )
-from app.services.auth import create_auth_session, require_roles
+from app.services.app_state import get_app_mode, set_app_mode
+from app.services.auth import auth_required, create_auth_session, require_roles
 from app.services.candidate_generators import get_provider_status
 from app.services.data_dictionary import list_data_dictionary
+from app.services.demo_data import clear_demo_data, reset_standard_demo_data
 from app.services.export import episode_logs_to_csv
 from app.services.experimental import generate_experimental_condition, run_phase_manipulation
 from app.services.governance import get_data_governance_policy
-from app.services.pipeline import analyze_student_response
+from app.services.pipeline import analyze_student_response, run_provider_smoke_test
+from app.services.research import build_research_evidence_summary
 from app.services.store import store
+from app.services.study_builder import generate_study_materials, record_study_next_turn
 from app.services.templates import list_checkpoint_templates
 
 router = APIRouter()
@@ -58,6 +76,51 @@ def ai_provider_status() -> AIProviderStatus:
 @router.get("/data-governance", response_model=DataGovernancePolicy)
 def data_governance() -> DataGovernancePolicy:
     return get_data_governance_policy()
+
+
+@router.get("/system/status", response_model=SystemStatus)
+def system_status() -> SystemStatus:
+    provider_status = get_provider_status()
+    logs = store.list_episode_logs()
+    last_ai_log = next((log for log in logs if log.ai_provider != "baseline"), None)
+    return SystemStatus(
+        app_mode=get_app_mode(),
+        ai_provider=provider_status.ai_provider,
+        model_name=provider_status.model_name,
+        ai_configured=provider_status.configured,
+        fallback_available=provider_status.fallback_available,
+        storage_backend=os.getenv("STORE_BACKEND", "json").strip().lower() or "json",
+        auth_required=auth_required(),
+        total_checkpoints=len(store.list_checkpoints()),
+        total_episodes=len(logs),
+        real_llm_runs=sum(1 for log in logs if log.ai_provider in {"openai", "deepseek"}),
+        mock_runs=sum(1 for log in logs if log.ai_provider == "mock"),
+        baseline_runs=sum(1 for log in logs if log.ai_provider == "baseline"),
+        last_ai_run_at=last_ai_log.created_at if last_ai_log is not None else None,
+        last_ai_run_provider=last_ai_log.ai_provider if last_ai_log is not None else None,
+        last_ai_run_model=last_ai_log.model_name if last_ai_log is not None else None,
+    )
+
+
+@router.patch("/system/mode", response_model=SystemStatus, dependencies=[teacher_auth])
+def update_system_mode(payload: SystemModeUpdate) -> SystemStatus:
+    set_app_mode(payload.app_mode)
+    return system_status()
+
+
+@router.post("/system/demo-data/reset", response_model=DemoDataResult, dependencies=[teacher_auth])
+def reset_demo_data() -> DemoDataResult:
+    return reset_standard_demo_data()
+
+
+@router.post("/system/demo-data/clear", response_model=DemoDataResult, dependencies=[teacher_auth])
+def clear_local_demo_data() -> DemoDataResult:
+    return clear_demo_data()
+
+
+@router.post("/ai/provider-smoke-test", response_model=AIProviderSmokeTestResult, dependencies=[teacher_auth])
+def ai_provider_smoke_test(payload: AIProviderSmokeTestRequest) -> AIProviderSmokeTestResult:
+    return run_provider_smoke_test(payload)
 
 
 @router.get("/checkpoints", response_model=list[CheckpointRead], dependencies=[teacher_auth])
@@ -144,6 +207,20 @@ def analyze_response(response_id: str, rerun: bool = False) -> AnalyzeResponseRe
     return analyze_student_response(checkpoint, response, force_rerun=rerun)
 
 
+@router.delete(
+    "/responses/{response_id}/analysis-cache",
+    response_model=AnalysisCacheClearResult,
+    dependencies=[teacher_auth],
+)
+def clear_response_analysis_cache(response_id: str) -> AnalysisCacheClearResult:
+    if store.get_response(response_id) is None:
+        raise HTTPException(status_code=404, detail="Response not found")
+    return AnalysisCacheClearResult(
+        response_id=response_id,
+        cleared_cards=store.clear_cards_for_response(response_id),
+    )
+
+
 @router.post(
     "/experimental/generate-condition",
     response_model=ExperimentalConditionResult,
@@ -157,6 +234,22 @@ def experimental_condition(payload: ExperimentalConditionRequest) -> Experimenta
     if checkpoint is None:
         raise HTTPException(status_code=404, detail="Checkpoint not found")
     return generate_experimental_condition(checkpoint, response, payload.condition)
+
+
+@router.post("/study-builder/materials", response_model=StudyMaterialResult, dependencies=[teacher_auth])
+def study_builder_materials(payload: StudyMaterialRequest) -> StudyMaterialResult:
+    try:
+        return generate_study_materials(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/study-builder/next-turns", response_model=StudyNextTurnResult, dependencies=[teacher_auth])
+def study_builder_next_turn(payload: StudyNextTurnRequest) -> StudyNextTurnResult:
+    try:
+        return StudyNextTurnResult(episode_log=record_study_next_turn(payload))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.post("/demo/phase-manipulation", response_model=PhaseManipulationResult)
@@ -192,6 +285,19 @@ def list_episode_logs(
         limit=limit,
         offset=offset,
     )
+
+
+@router.get("/research/evidence-summary", response_model=ResearchEvidenceSummary, dependencies=[research_auth])
+def research_evidence_summary() -> ResearchEvidenceSummary:
+    return build_research_evidence_summary()
+
+
+@router.patch("/research/episode-logs/{log_id}/annotation", response_model=EpisodeLog, dependencies=[research_auth])
+def update_episode_annotation(log_id: str, payload: EpisodeAnnotationUpdate) -> EpisodeLog:
+    log = store.update_episode_log_annotation(log_id, payload)
+    if log is None:
+        raise HTTPException(status_code=404, detail="Episode log not found")
+    return log
 
 
 @router.get("/research/episode-logs.csv", dependencies=[research_auth])

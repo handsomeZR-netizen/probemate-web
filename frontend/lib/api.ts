@@ -1,6 +1,8 @@
 import type {
   AIProviderStatus,
+  AIProviderSmokeTestResult,
   AnalyzeResponseResult,
+  AppMode,
   AuthSession,
   Checkpoint,
   CheckpointTemplate,
@@ -8,16 +10,22 @@ import type {
   CurrentActivity,
   DataDictionaryField,
   DataGovernancePolicy,
+  DemoDataResult,
   EpisodeLog,
   ExperimentCondition,
   ExperimentalConditionResult,
   GateMove,
   LessonPhase,
   PhaseManipulationResult,
+  ProviderRunMode,
   QueueState,
+  ResearchEvidenceSummary,
   ResponseSource,
   StudentConfidence,
   StudentResponse,
+  StudyMaterialResult,
+  StudyNextTurnResult,
+  SystemStatus,
   TeacherAction
 } from "./types";
 
@@ -92,6 +100,42 @@ export function getAIProviderStatus(): Promise<AIProviderStatus> {
 
 export function getDataGovernancePolicy(): Promise<DataGovernancePolicy> {
   return request<DataGovernancePolicy>("/data-governance");
+}
+
+export function getSystemStatus(): Promise<SystemStatus> {
+  return request<SystemStatus>("/system/status");
+}
+
+export function updateSystemMode(appMode: AppMode): Promise<SystemStatus> {
+  return request<SystemStatus>("/system/mode", {
+    method: "PATCH",
+    body: JSON.stringify({ app_mode: appMode })
+  });
+}
+
+export function resetDemoData(): Promise<DemoDataResult> {
+  return request<DemoDataResult>("/system/demo-data/reset", {
+    method: "POST"
+  });
+}
+
+export function clearDemoData(): Promise<DemoDataResult> {
+  return request<DemoDataResult>("/system/demo-data/clear", {
+    method: "POST"
+  });
+}
+
+export function runAIProviderSmokeTest(payload: {
+  question: string;
+  answer_text: string;
+  target_concept: string;
+  lesson_phase: LessonPhase;
+  current_activity: CurrentActivity;
+}): Promise<AIProviderSmokeTestResult> {
+  return request<AIProviderSmokeTestResult>("/ai/provider-smoke-test", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
 }
 
 export function listCheckpointTemplates(): Promise<CheckpointTemplate[]> {
@@ -183,6 +227,12 @@ export function rerunAnalysis(responseId: string): Promise<AnalyzeResponseResult
   });
 }
 
+export function clearAnalysisCache(responseId: string): Promise<{ response_id: string; cleared_cards: number }> {
+  return request<{ response_id: string; cleared_cards: number }>(`/responses/${responseId}/analysis-cache`, {
+    method: "DELETE"
+  });
+}
+
 export function createTeacherAction(payload: {
   card_id: string;
   action: TeacherAction;
@@ -233,6 +283,28 @@ export function listDataDictionary(): Promise<DataDictionaryField[]> {
   return request<DataDictionaryField[]>("/research/data-dictionary");
 }
 
+export function getResearchEvidenceSummary(): Promise<ResearchEvidenceSummary> {
+  return request<ResearchEvidenceSummary>("/research/evidence-summary");
+}
+
+export function updateEpisodeAnnotation(
+  logId: string,
+  payload: {
+    expert_preferred_move?: GateMove | null;
+    commitment_distance?: number | null;
+    harmful_over_commitment?: boolean | null;
+    harmful_under_commitment?: boolean | null;
+    answer_leakage?: boolean | null;
+    self_correction_support?: number | null;
+    annotation_note?: string | null;
+  }
+): Promise<EpisodeLog> {
+  return request<EpisodeLog>(`/research/episode-logs/${logId}/annotation`, {
+    method: "PATCH",
+    body: JSON.stringify(payload)
+  });
+}
+
 export function generateExperimentalCondition(payload: {
   response_id: string;
   condition: ExperimentCondition;
@@ -243,9 +315,35 @@ export function generateExperimentalCondition(payload: {
   });
 }
 
+export function generateStudyMaterials(payload: {
+  response_id: string;
+  conditions: ExperimentCondition[];
+  blind_labels?: boolean;
+  randomize_order?: boolean;
+}): Promise<StudyMaterialResult> {
+  return request<StudyMaterialResult>("/study-builder/materials", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
+export function submitStudyNextTurn(payload: {
+  episode_log_id: string;
+  teacher_next_turn: string;
+  decision_time_ms: number;
+  perceived_load?: number;
+  note?: string;
+}): Promise<StudyNextTurnResult> {
+  return request<StudyNextTurnResult>("/study-builder/next-turns", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
 export function runPhaseManipulation(payload: {
   lesson_phase: LessonPhase;
   current_activity: CurrentActivity;
+  provider_mode?: ProviderRunMode;
   answer_text?: string;
   question?: string;
   target_concept?: string;

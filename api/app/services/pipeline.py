@@ -2,6 +2,8 @@ from datetime import datetime, timezone
 from time import perf_counter
 
 from app.schemas.models import (
+    AIProviderSmokeTestRequest,
+    AIProviderSmokeTestResult,
     AnalyzeResponseResult,
     CandidateOutput,
     CheckpointRead,
@@ -14,7 +16,7 @@ from app.schemas.models import (
     StudentResponseRead,
     TeacherCard,
 )
-from app.services.candidate_generators import get_candidate_generator, mock_candidate_generator
+from app.services.candidate_generators import get_candidate_generator, get_provider_status, mock_candidate_generator
 from app.services.evidence_audit import quote_exists
 from app.services.store import new_id, store
 
@@ -163,4 +165,47 @@ def analyze_student_response(
         model_name=saved_card.model_name,
         raw_llm_valid=saved_card.raw_llm_valid,
         fallback_used=saved_card.fallback_used,
+    )
+
+
+def run_provider_smoke_test(payload: AIProviderSmokeTestRequest) -> AIProviderSmokeTestResult:
+    started = perf_counter()
+    input_pack = InputPack(
+        episode_id=new_id("smoke"),
+        question=payload.question,
+        student_answer=payload.answer_text,
+        target_concept=payload.target_concept,
+        lesson_phase=payload.lesson_phase,
+        current_activity=payload.current_activity,
+        visibility_policy=payload.visibility_policy,
+        prior_context={
+            "has_practiced_deceleration": payload.lesson_phase
+            in {LessonPhase.PRACTICE, LessonPhase.REVIEW},
+            "is_peer_discussion_active": payload.current_activity == CurrentActivity.PEER_DISCUSSION,
+            "is_teacher_wrapping_up": payload.current_activity == CurrentActivity.TEACHER_WRAP_UP,
+        },
+    )
+    generation_result = get_candidate_generator().generate(input_pack)
+    if generation_result.candidate_output is None:
+        raise RuntimeError("Candidate generator returned no candidate output")
+    candidate_output = generation_result.candidate_output
+    gate_decision = decide_gate(input_pack, candidate_output)
+    downgrade_reason = gate_decision.downgrade_reason
+    if generation_result.downgrade_reason and gate_decision.downgrade_reason in {None, "evidence_ambiguous"}:
+        downgrade_reason = generation_result.downgrade_reason
+        gate_decision = gate_decision.model_copy(update={"downgrade_reason": downgrade_reason})
+    provider_status = get_provider_status()
+    return AIProviderSmokeTestResult(
+        ai_provider=generation_result.ai_provider,
+        model_name=generation_result.model_name,
+        configured=provider_status.configured,
+        latency_ms=int((perf_counter() - started) * 1000),
+        raw_llm_valid=generation_result.raw_llm_valid,
+        fallback_used=generation_result.fallback_used,
+        quote_audit_passed=quote_exists(input_pack, candidate_output),
+        validation_error=generation_result.validation_error,
+        provider_error=generation_result.provider_error,
+        downgrade_reason=downgrade_reason,
+        gate_decision=gate_decision,
+        candidate_output=candidate_output,
     )

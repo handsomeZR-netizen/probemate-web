@@ -125,6 +125,8 @@ def test_research_data_dictionary_documents_key_fields() -> None:
     assert fields["confidence_level"]["allowed_values"] == ["unsure", "low", "medium", "high"]
     assert "queue_state" in fields
     assert "class_name" in fields
+    assert "harmful_over_commitment" in fields
+    assert "commitment_distance" in fields
 
 
 def test_data_governance_policy_defaults() -> None:
@@ -135,6 +137,43 @@ def test_data_governance_policy_defaults() -> None:
     assert payload["retention_days"] == 180
     assert payload["deidentify_exports_by_default"] is True
     assert payload["student_misconception_labels_hidden"] is True
+
+
+def test_system_status_reports_command_center_fields() -> None:
+    response = client.get("/system/status")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ai_provider"]
+    assert payload["storage_backend"] in {"json", "postgres"}
+    assert isinstance(payload["auth_required"], bool)
+    assert payload["total_checkpoints"] >= 0
+    assert payload["total_episodes"] >= 0
+    assert {"real_llm_runs", "mock_runs", "baseline_runs"} <= set(payload)
+    assert {"last_ai_run_at", "last_ai_run_provider", "last_ai_run_model"} <= set(payload)
+    assert payload["app_mode"] in {"demo", "research", "classroom_pilot"}
+
+
+def test_ai_provider_smoke_test_reports_gate_and_audit_metadata() -> None:
+    response = client.post(
+        "/ai/provider-smoke-test",
+        json={
+            "question": "汽车向前运动，但速度越来越小，它的加速度方向是什么？",
+            "answer_text": "向前，因为车还在往前走。",
+            "target_concept": "加速度方向",
+            "lesson_phase": "practice",
+            "current_activity": "whole_class",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ai_provider"] == "mock"
+    assert payload["configured"] is True
+    assert payload["quote_audit_passed"] is True
+    assert payload["raw_llm_valid"] is True
+    assert payload["fallback_used"] is False
+    assert payload["gate_decision"]["move"] == "diagnostic_probe"
 
 
 def test_teacher_access_code_protects_teacher_routes(monkeypatch) -> None:
@@ -298,6 +337,39 @@ def test_analysis_is_idempotent_by_default() -> None:
     assert len(matching_logs) == 1
 
 
+def test_clear_analysis_cache_allows_new_card_generation() -> None:
+    checkpoint_response = client.post(
+        "/checkpoints",
+        json={
+            "question": "箱子上放一本书，箱子被推着匀速前进。书受到的摩擦力方向是什么？",
+            "target_concept": "摩擦力方向",
+            "lesson_phase": "practice",
+            "current_activity": "whole_class",
+            "visibility_policy": "teacher_only",
+        },
+    )
+    checkpoint = checkpoint_response.json()
+    student_response = client.post(
+        f"/checkpoints/{checkpoint['id']}/responses",
+        json={"answer_text": "向后，因为摩擦力总是阻碍运动。", "anonymous_student_id": "S14"},
+    )
+    response = student_response.json()
+
+    first = client.post(f"/responses/{response['id']}/analyze")
+    cached = client.post(f"/responses/{response['id']}/analyze")
+    clear_response = client.delete(f"/responses/{response['id']}/analysis-cache")
+    after_clear = client.post(f"/responses/{response['id']}/analyze")
+
+    assert first.status_code == 200
+    assert cached.status_code == 200
+    assert cached.json()["cached"] is True
+    assert clear_response.status_code == 200
+    assert clear_response.json()["cleared_cards"] == 1
+    assert after_clear.status_code == 200
+    assert after_clear.json()["cached"] is False
+    assert after_clear.json()["card"]["id"] != first.json()["card"]["id"]
+
+
 def test_student_response_edit_increments_revision_and_invalidates_cached_card() -> None:
     checkpoint_response = client.post(
         "/checkpoints",
@@ -450,6 +522,111 @@ def test_condition_generator_outputs_all_conditions() -> None:
     assert matching["ai_provider"] == "baseline"
 
 
+def test_study_builder_generates_blind_materials() -> None:
+    checkpoint_response = client.post(
+        "/checkpoints",
+        json={
+            "question": "汽车向前运动，但速度越来越小，它的加速度方向是什么？",
+            "target_concept": "加速度方向",
+            "lesson_phase": "practice",
+            "current_activity": "whole_class",
+            "visibility_policy": "teacher_only",
+        },
+    )
+    checkpoint = checkpoint_response.json()
+    student_response = client.post(
+        f"/checkpoints/{checkpoint['id']}/responses",
+        json={"answer_text": "向前，因为车还在往前走。", "anonymous_student_id": "S41"},
+    )
+    response = student_response.json()
+
+    materials_response = client.post(
+        "/study-builder/materials",
+        json={"response_id": response["id"], "conditions": ["no_ai", "over_committed", "probemate"]},
+    )
+
+    assert materials_response.status_code == 200
+    payload = materials_response.json()
+    assert payload["response_id"] == response["id"]
+    assert [row["assistant_label"] for row in payload["rows"]] == ["Assistant A", "Assistant B", "Assistant C"]
+    assert {row["condition"] for row in payload["rows"]} == {"no_ai", "over_committed", "probemate"}
+    assert all(row["question"] == checkpoint["question"] for row in payload["rows"])
+    assert all(row["episode_log_id"] for row in payload["rows"])
+
+    next_turn_response = client.post(
+        "/study-builder/next-turns",
+        json={
+            "episode_log_id": payload["rows"][0]["episode_log_id"],
+            "teacher_next_turn": "请先画出此刻和下一秒的速度箭头。",
+            "decision_time_ms": 31000,
+            "perceived_load": 3,
+            "note": "timed vignette pilot",
+        },
+    )
+
+    assert next_turn_response.status_code == 200
+    next_turn_log = next_turn_response.json()["episode_log"]
+    assert next_turn_log["teacher_final_turn"] == "请先画出此刻和下一秒的速度箭头。"
+    assert next_turn_log["decision_time_ms"] == 31000
+    assert next_turn_log["study_perceived_load"] == 3
+    assert next_turn_log["study_note"] == "timed vignette pilot"
+
+
+def test_research_summary_and_annotation_update() -> None:
+    checkpoint_response = client.post(
+        "/checkpoints",
+        json={
+            "question": "减速运动中，加速度方向如何判断？",
+            "target_concept": "加速度方向",
+            "lesson_phase": "practice",
+            "current_activity": "whole_class",
+            "visibility_policy": "teacher_only",
+        },
+    )
+    checkpoint = checkpoint_response.json()
+    student_response = client.post(
+        f"/checkpoints/{checkpoint['id']}/responses",
+        json={"answer_text": "向前，因为车还在往前走。", "anonymous_student_id": "S42"},
+    )
+    response = student_response.json()
+    client.post(f"/responses/{response['id']}/analyze")
+    log = next(log for log in client.get("/research/episode-logs").json() if log["response_id"] == response["id"])
+
+    annotation = client.patch(
+        f"/research/episode-logs/{log['id']}/annotation",
+        json={
+            "expert_preferred_move": "ask_for_evidence",
+            "commitment_distance": 1,
+            "harmful_over_commitment": True,
+            "answer_leakage": False,
+            "self_correction_support": 4,
+        },
+    )
+    summary = client.get("/research/evidence-summary")
+
+    assert annotation.status_code == 200
+    assert annotation.json()["harmful_over_commitment"] is True
+    assert annotation.json()["self_correction_support"] == 4
+    assert summary.status_code == 200
+    assert summary.json()["total_episodes"] >= 1
+    assert summary.json()["harmful_over_commitment"] >= 1
+
+
+def test_system_mode_and_demo_data_reset() -> None:
+    mode_response = client.patch("/system/mode", json={"app_mode": "research"})
+    reset_response = client.post("/system/demo-data/reset")
+
+    assert mode_response.status_code == 200
+    assert mode_response.json()["app_mode"] == "research"
+    assert reset_response.status_code == 200
+    payload = reset_response.json()
+    assert payload["app_mode"] == "demo"
+    assert payload["checkpoints"] >= 3
+    assert payload["responses"] >= 5
+    assert payload["episode_logs"] >= 5
+    assert "DevTools" not in client.get("/research/episode-logs.csv?deidentify=false").text
+
+
 def test_phase_manipulation_shows_ask_probe_hold_sequence() -> None:
     intro = client.post(
         "/demo/phase-manipulation",
@@ -467,6 +644,26 @@ def test_phase_manipulation_shows_ask_probe_hold_sequence() -> None:
     assert intro["move"] == "ask_for_evidence"
     assert practiced["move"] == "diagnostic_probe"
     assert discussion["move"] == "hold"
+    assert intro["provider_mode"] == "mock"
+    assert intro["ai_provider"] == "mock"
+    assert intro["quote_audit_passed"] is True
+
+
+def test_phase_manipulation_can_use_current_provider_mode() -> None:
+    response = client.post(
+        "/demo/phase-manipulation",
+        json={
+            "lesson_phase": "practice",
+            "current_activity": "whole_class",
+            "provider_mode": "current",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["provider_mode"] == "current"
+    assert payload["ai_provider"]
+    assert "quote_audit_passed" in payload
 
 
 def test_ai_provider_status_reports_mock_by_default(monkeypatch) -> None:

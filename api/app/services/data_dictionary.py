@@ -57,6 +57,20 @@ DATA_DICTIONARY = [
         pii_risk="medium",
     ),
     DataDictionaryField(
+        name="study_perceived_load",
+        type="integer",
+        description="Study 3 教师 next-turn 任务后记录的主观负荷，1 到 7。",
+        source="StudyNextTurnRequest.perceived_load",
+        allowed_values=["1", "2", "3", "4", "5", "6", "7"],
+    ),
+    DataDictionaryField(
+        name="study_note",
+        type="string",
+        description="Study Builder 参与者或研究者对 timed next-turn 回应的补充备注。",
+        source="StudyNextTurnRequest.note",
+        pii_risk="medium",
+    ),
+    DataDictionaryField(
         name="gate_reasons",
         type="string[]",
         description="gate 选择 Hold/Ask/Probe 的规则化原因。",
@@ -113,6 +127,45 @@ DATA_DICTIONARY = [
         type="boolean",
         description="是否使用保守降级卡片替代不可用或不可校验的真实 LLM 输出。",
         source="CandidateGenerationResult.fallback_used",
+    ),
+    DataDictionaryField(
+        name="expert_preferred_move",
+        type="enum",
+        description="专家标注的更合适教师动作，用于计算系统承诺距离。",
+        source="EpisodeLog.expert_preferred_move",
+        allowed_values=["hold", "ask_for_evidence", "diagnostic_probe"],
+    ),
+    DataDictionaryField(
+        name="commitment_distance",
+        type="integer",
+        description="系统动作相对专家偏好动作的承诺距离；正数表示更强，负数表示更弱。",
+        source="EpisodeLog.commitment_distance",
+        allowed_values=["-2", "-1", "0", "1", "2"],
+    ),
+    DataDictionaryField(
+        name="harmful_over_commitment",
+        type="boolean",
+        description="人工标注该输出是否构成有害过度承诺。",
+        source="EpisodeLog.harmful_over_commitment",
+    ),
+    DataDictionaryField(
+        name="harmful_under_commitment",
+        type="boolean",
+        description="人工标注该输出是否构成有害承诺不足。",
+        source="EpisodeLog.harmful_under_commitment",
+    ),
+    DataDictionaryField(
+        name="answer_leakage",
+        type="boolean",
+        description="人工标注该输出是否泄露标准答案或过早纠正。",
+        source="EpisodeLog.answer_leakage",
+    ),
+    DataDictionaryField(
+        name="self_correction_support",
+        type="integer",
+        description="专家标注该输出支持学生自我修正的程度，1 到 5。",
+        source="EpisodeLog.self_correction_support",
+        allowed_values=["1", "2", "3", "4", "5"],
     ),
 ]
 
